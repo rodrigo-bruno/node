@@ -36,6 +36,7 @@ struct WasmModule;
   V(WasmAllocateHeapNumber)              \
   V(WasmArgumentsAdaptor)                \
   V(WasmCallJavaScript)                  \
+  V(WasmGrowMemory)                      \
   V(WasmStackGuard)                      \
   V(WasmToNumber)                        \
   V(DoubleToI)
@@ -85,9 +86,6 @@ class V8_EXPORT_PRIVATE DisjointAllocationPool final {
   DISALLOW_COPY_AND_ASSIGN(DisjointAllocationPool)
 };
 
-using ProtectedInstructions =
-    std::vector<trap_handler::ProtectedInstructionData>;
-
 class V8_EXPORT_PRIVATE WasmCode final {
  public:
   enum Kind {
@@ -96,7 +94,6 @@ class V8_EXPORT_PRIVATE WasmCode final {
     kLazyStub,
     kRuntimeStub,
     kInterpreterEntry,
-    kTrampoline,
     kJumpTable
   };
 
@@ -120,16 +117,13 @@ class V8_EXPORT_PRIVATE WasmCode final {
   Address instruction_start() const {
     return reinterpret_cast<Address>(instructions_.start());
   }
-  Vector<const byte> reloc_info() const {
-    return {reloc_info_.get(), reloc_size_};
-  }
+  Vector<const byte> reloc_info() const { return reloc_info_.as_vector(); }
   Vector<const byte> source_positions() const {
-    return {source_position_table_.get(), source_position_size_};
+    return source_position_table_.as_vector();
   }
 
   uint32_t index() const { return index_.ToChecked(); }
-  // Anonymous functions are functions that don't carry an index, like
-  // trampolines.
+  // Anonymous functions are functions that don't carry an index.
   bool IsAnonymous() const { return index_.IsNothing(); }
   Kind kind() const { return kind_; }
   NativeModule* native_module() const { return native_module_; }
@@ -145,16 +139,14 @@ class V8_EXPORT_PRIVATE WasmCode final {
            pc < reinterpret_cast<Address>(instructions_.end());
   }
 
-  const ProtectedInstructions& protected_instructions() const {
-    // TODO(mstarzinger): Code that doesn't have trapping instruction should
-    // not be required to have this vector, make it possible to be null.
-    DCHECK_NOT_NULL(protected_instructions_);
-    return *protected_instructions_.get();
+  Vector<trap_handler::ProtectedInstructionData> protected_instructions()
+      const {
+    return protected_instructions_.as_vector();
   }
 
   void Validate() const;
-  void Print(Isolate* isolate) const;
-  void Disassemble(const char* name, Isolate* isolate, std::ostream& os,
+  void Print(const char* name = nullptr) const;
+  void Disassemble(const char* name, std::ostream& os,
                    Address current_pc = kNullAddress) const;
 
   static bool ShouldBeLogged(Isolate* isolate);
@@ -164,27 +156,20 @@ class V8_EXPORT_PRIVATE WasmCode final {
 
   enum FlushICache : bool { kFlushICache = true, kNoFlushICache = false };
 
-  // Offset of {instructions_.start()}. It is used for tiering, when
-  // we check if optimized code is available during the prologue
-  // of Liftoff-compiled code.
-  static constexpr int kInstructionStartOffset = 0;
-
  private:
   friend class NativeModule;
 
-  WasmCode(Vector<byte> instructions, std::unique_ptr<const byte[]> reloc_info,
-           size_t reloc_size, std::unique_ptr<const byte[]> source_pos,
-           size_t source_pos_size, NativeModule* native_module,
-           Maybe<uint32_t> index, Kind kind, size_t constant_pool_offset,
-           uint32_t stack_slots, size_t safepoint_table_offset,
-           size_t handler_table_offset,
-           std::unique_ptr<ProtectedInstructions> protected_instructions,
-           Tier tier)
+  WasmCode(NativeModule* native_module, Maybe<uint32_t> index,
+           Vector<byte> instructions, uint32_t stack_slots,
+           size_t safepoint_table_offset, size_t handler_table_offset,
+           size_t constant_pool_offset,
+           OwnedVector<trap_handler::ProtectedInstructionData>
+               protected_instructions,
+           OwnedVector<const byte> reloc_info,
+           OwnedVector<const byte> source_position_table, Kind kind, Tier tier)
       : instructions_(instructions),
         reloc_info_(std::move(reloc_info)),
-        reloc_size_(reloc_size),
-        source_position_table_(std::move(source_pos)),
-        source_position_size_(source_pos_size),
+        source_position_table_(std::move(source_position_table)),
         native_module_(native_module),
         index_(index),
         kind_(kind),
@@ -197,7 +182,6 @@ class V8_EXPORT_PRIVATE WasmCode final {
     DCHECK_LE(safepoint_table_offset, instructions.size());
     DCHECK_LE(constant_pool_offset, instructions.size());
     DCHECK_LE(handler_table_offset, instructions.size());
-    DCHECK_EQ(kInstructionStartOffset, OFFSET_OF(WasmCode, instructions_));
   }
 
   // Code objects that have been registered with the global trap handler within
@@ -211,10 +195,8 @@ class V8_EXPORT_PRIVATE WasmCode final {
   void RegisterTrapHandlerData();
 
   Vector<byte> instructions_;
-  std::unique_ptr<const byte[]> reloc_info_;
-  size_t reloc_size_ = 0;
-  std::unique_ptr<const byte[]> source_position_table_;
-  size_t source_position_size_ = 0;
+  OwnedVector<const byte> reloc_info_;
+  OwnedVector<const byte> source_position_table_;
   NativeModule* native_module_ = nullptr;
   Maybe<uint32_t> index_;
   Kind kind_;
@@ -226,7 +208,7 @@ class V8_EXPORT_PRIVATE WasmCode final {
   size_t safepoint_table_offset_ = 0;
   size_t handler_table_offset_ = 0;
   intptr_t trap_handler_index_ = -1;
-  std::unique_ptr<ProtectedInstructions> protected_instructions_;
+  OwnedVector<trap_handler::ProtectedInstructionData> protected_instructions_;
   Tier tier_;
 
   DISALLOW_COPY_AND_ASSIGN(WasmCode);
@@ -237,11 +219,27 @@ const char* GetWasmCodeKindAsString(WasmCode::Kind);
 
 class V8_EXPORT_PRIVATE NativeModule final {
  public:
-  WasmCode* AddCode(const CodeDesc& desc, uint32_t frame_count, uint32_t index,
+#if V8_TARGET_ARCH_X64 || V8_TARGET_ARCH_S390X || V8_TARGET_ARCH_ARM64
+  static constexpr bool kCanAllocateMoreMemory = false;
+#else
+  static constexpr bool kCanAllocateMoreMemory = true;
+#endif
+
+  WasmCode* AddCode(uint32_t index, const CodeDesc& desc, uint32_t stack_slots,
                     size_t safepoint_table_offset, size_t handler_table_offset,
-                    std::unique_ptr<ProtectedInstructions>,
-                    Handle<ByteArray> source_position_table,
+                    OwnedVector<trap_handler::ProtectedInstructionData>
+                        protected_instructions,
+                    OwnedVector<const byte> source_position_table,
                     WasmCode::Tier tier);
+
+  WasmCode* AddDeserializedCode(
+      uint32_t index, Vector<const byte> instructions, uint32_t stack_slots,
+      size_t safepoint_table_offset, size_t handler_table_offset,
+      size_t constant_pool_offset,
+      OwnedVector<trap_handler::ProtectedInstructionData>
+          protected_instructions,
+      OwnedVector<const byte> reloc_info,
+      OwnedVector<const byte> source_position_table, WasmCode::Tier tier);
 
   // A way to copy over JS-allocated code. This is because we compile
   // certain wrappers using a different pipeline.
@@ -250,7 +248,7 @@ class V8_EXPORT_PRIVATE NativeModule final {
   // Add an interpreter entry. For the same reason as AddCodeCopy, we
   // currently compile these using a different pipeline and we can't get a
   // CodeDesc here. When adding interpreter wrappers, we do not insert them in
-  // the code_table, however, we let them self-identify as the {index} function
+  // the code_table, however, we let them self-identify as the {index} function.
   WasmCode* AddInterpreterEntry(Handle<Code> code, uint32_t index);
 
   // When starting lazy compilation, provide the WasmLazyCompile builtin by
@@ -265,16 +263,12 @@ class V8_EXPORT_PRIVATE NativeModule final {
   void SetRuntimeStubs(Isolate* isolate);
 
   WasmCode* code(uint32_t index) const {
-    DCHECK_LT(index, num_functions_);
-    DCHECK_LE(num_imported_functions_, index);
-    return code_table_[index - num_imported_functions_];
+    DCHECK_LT(index, num_functions());
+    DCHECK_LE(module_->num_imported_functions, index);
+    return code_table_[index - module_->num_imported_functions];
   }
 
-  bool has_code(uint32_t index) const {
-    DCHECK_LT(index, num_functions_);
-    DCHECK_LE(num_imported_functions_, index);
-    return code_table_[index - num_imported_functions_] != nullptr;
-  }
+  bool has_code(uint32_t index) const { return code(index) != nullptr; }
 
   WasmCode* runtime_stub(WasmCode::RuntimeStubId index) const {
     DCHECK_LT(index, WasmCode::kRuntimeStubCount);
@@ -287,7 +281,7 @@ class V8_EXPORT_PRIVATE NativeModule final {
     return jump_table_->contains(address);
   }
 
-  uint32_t GetFunctionIndexFromJumpTableSlot(Address slot_address);
+  uint32_t GetFunctionIndexFromJumpTableSlot(Address slot_address) const;
 
   // Transition this module from code relying on trap handlers (i.e. without
   // explicit memory bounds checks) to code that does not require trap handlers
@@ -306,44 +300,41 @@ class V8_EXPORT_PRIVATE NativeModule final {
   // For cctests, where we build both WasmModule and the runtime objects
   // on the fly, and bypass the instance builder pipeline.
   void ReserveCodeTableForTesting(uint32_t max_functions);
-  void SetNumFunctionsForTesting(uint32_t num_functions);
-  void SetCodeForTesting(uint32_t index, WasmCode* code);
 
   void LogWasmCodes(Isolate* isolate);
 
   CompilationState* compilation_state() { return compilation_state_.get(); }
 
-  // TODO(mstarzinger): The link to the {WasmModuleObject} is deprecated and
-  // all uses should vanish to make {NativeModule} independent of the Isolate.
-  WasmModuleObject* module_object() const;
-  void SetModuleObject(Handle<WasmModuleObject>);
-
-  uint32_t num_functions() const { return num_functions_; }
-  uint32_t num_imported_functions() const { return num_imported_functions_; }
+  uint32_t num_functions() const {
+    return module_->num_declared_functions + module_->num_imported_functions;
+  }
+  uint32_t num_imported_functions() const {
+    return module_->num_imported_functions;
+  }
   Vector<WasmCode*> code_table() const {
-    return {code_table_.get(), num_functions_ - num_imported_functions_};
+    return {code_table_.get(), module_->num_declared_functions};
   }
   bool use_trap_handler() const { return use_trap_handler_; }
   void set_lazy_compile_frozen(bool frozen) { lazy_compile_frozen_ = frozen; }
   bool lazy_compile_frozen() const { return lazy_compile_frozen_; }
+  Vector<const byte> wire_bytes() const { return wire_bytes_.as_vector(); }
+  void set_wire_bytes(OwnedVector<const byte> wire_bytes) {
+    wire_bytes_ = std::move(wire_bytes);
+  }
+  const WasmModule* module() const { return module_.get(); }
 
   WasmCode* Lookup(Address) const;
 
-  const size_t instance_id = 0;
   ~NativeModule();
 
  private:
   friend class WasmCode;
   friend class WasmCodeManager;
-  friend class NativeModuleSerializer;
-  friend class NativeModuleDeserializer;
   friend class NativeModuleModificationScope;
 
-  static base::AtomicNumber<size_t> next_id_;
-  NativeModule(Isolate* isolate, uint32_t num_functions,
-               uint32_t num_imported_functions, bool can_request_more,
+  NativeModule(Isolate* isolate, bool can_request_more,
                VirtualMemory* code_space, WasmCodeManager* code_manager,
-               ModuleEnv& env);
+               std::shared_ptr<const WasmModule> module, const ModuleEnv& env);
 
   WasmCode* AddAnonymousCode(Handle<Code>, WasmCode::Kind kind);
   Address AllocateForCode(size_t size);
@@ -352,18 +343,14 @@ class V8_EXPORT_PRIVATE NativeModule final {
   // module is owned by that module. Various callers get to decide on how the
   // code is obtained (CodeDesc vs, as a point in time, Code*), the kind,
   // whether it has an index or is anonymous, etc.
-  WasmCode* AddOwnedCode(Vector<const byte> orig_instructions,
-                         std::unique_ptr<const byte[]> reloc_info,
-                         size_t reloc_size,
-                         std::unique_ptr<const byte[]> source_pos,
-                         size_t source_pos_size, Maybe<uint32_t> index,
-                         WasmCode::Kind kind, size_t constant_pool_offset,
+  WasmCode* AddOwnedCode(Maybe<uint32_t> index, Vector<const byte> instructions,
                          uint32_t stack_slots, size_t safepoint_table_offset,
                          size_t handler_table_offset,
-                         std::unique_ptr<ProtectedInstructions>, WasmCode::Tier,
-                         WasmCode::FlushICache);
-  Address GetLocalAddressFor(Handle<Code>);
-  Address CreateTrampolineTo(Handle<Code>);
+                         size_t constant_pool_offset,
+                         OwnedVector<trap_handler::ProtectedInstructionData>,
+                         OwnedVector<const byte> reloc_info,
+                         OwnedVector<const byte> source_position_table,
+                         WasmCode::Kind, WasmCode::Tier, WasmCode::FlushICache);
 
   WasmCode* CreateEmptyJumpTable(uint32_t num_wasm_functions);
 
@@ -371,36 +358,30 @@ class V8_EXPORT_PRIVATE NativeModule final {
                       WasmCode::FlushICache);
 
   void set_code(uint32_t index, WasmCode* code) {
-    DCHECK_LT(index, num_functions_);
-    DCHECK_LE(num_imported_functions_, index);
+    DCHECK_LT(index, num_functions());
+    DCHECK_LE(module_->num_imported_functions, index);
     DCHECK_EQ(code->index(), index);
-    code_table_[index - num_imported_functions_] = code;
+    code_table_[index - module_->num_imported_functions] = code;
   }
+
+  // TODO(clemensh): Make this a unique_ptr (requires refactoring
+  // AsyncCompileJob).
+  std::shared_ptr<const WasmModule> module_;
 
   // Holds all allocated code objects, is maintained to be in ascending order
   // according to the codes instruction start address to allow lookups.
   std::vector<std::unique_ptr<WasmCode>> owned_code_;
 
-  uint32_t num_functions_;
-  uint32_t num_imported_functions_;
   std::unique_ptr<WasmCode* []> code_table_;
 
-  WasmCode* runtime_stub_table_[WasmCode::kRuntimeStubCount] = {nullptr};
+  OwnedVector<const byte> wire_bytes_;
 
-  // Maps from instruction start of an immovable code object to instruction
-  // start of the trampoline.
-  // TODO(mstarzinger): By now trampolines are unused. Remove.
-  std::unordered_map<Address, Address> trampolines_;
+  WasmCode* runtime_stub_table_[WasmCode::kRuntimeStubCount] = {nullptr};
 
   // Jump table used to easily redirect wasm function calls.
   WasmCode* jump_table_ = nullptr;
 
   std::unique_ptr<CompilationState, CompilationStateDeleter> compilation_state_;
-
-  // A phantom reference to the {WasmModuleObject}. It is intentionally not
-  // typed {Handle<WasmModuleObject>} because this location will be cleared
-  // when the phantom reference is cleared.
-  WasmModuleObject** module_object_ = nullptr;
 
   DisjointAllocationPool free_code_space_;
   DisjointAllocationPool allocated_code_space_;
@@ -427,13 +408,9 @@ class V8_EXPORT_PRIVATE WasmCodeManager final {
   // is determined with a heuristic based on the total size of wasm
   // code. The native module may later request more memory.
   // TODO(titzer): isolate is only required here for CompilationState.
-  std::unique_ptr<NativeModule> NewNativeModule(Isolate* isolate,
-                                                const WasmModule& module,
-                                                ModuleEnv& env);
-  // TODO(titzer): isolate is only required here for CompilationState.
   std::unique_ptr<NativeModule> NewNativeModule(
-      Isolate* isolate, size_t memory_estimate, uint32_t num_functions,
-      uint32_t num_imported_functions, bool can_request_more, ModuleEnv& env);
+      Isolate* isolate, size_t memory_estimate, bool can_request_more,
+      std::shared_ptr<const WasmModule> module, const ModuleEnv& env);
 
   NativeModule* LookupNativeModule(Address pc) const;
   WasmCode* LookupCode(Address pc) const;

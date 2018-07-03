@@ -863,8 +863,7 @@ Reduction JSCallReducer::ReduceReflectGet(Node* node) {
         Builtins::CallableFor(isolate(), Builtins::kGetProperty);
     auto call_descriptor = Linkage::GetStubCallDescriptor(
         graph()->zone(), callable.descriptor(), 0,
-        CallDescriptor::kNeedsFrameState, Operator::kNoProperties,
-        MachineType::AnyTagged(), 1);
+        CallDescriptor::kNeedsFrameState, Operator::kNoProperties);
     Node* stub_code = jsgraph()->HeapConstant(callable.code());
     vtrue = etrue = if_true =
         graph()->NewNode(common()->Call(call_descriptor), stub_code, target,
@@ -1630,10 +1629,12 @@ Reduction JSCallReducer::ReduceArrayMap(Node* node,
                                      &check_fail, &control);
   }
 
-  Handle<Map> double_map(Map::cast(
-      native_context()->get(Context::ArrayMapIndex(HOLEY_DOUBLE_ELEMENTS))));
+  Handle<Map> double_map(Map::cast(native_context()->get(
+                             Context::ArrayMapIndex(HOLEY_DOUBLE_ELEMENTS))),
+                         isolate());
   Handle<Map> fast_map(
-      Map::cast(native_context()->get(Context::ArrayMapIndex(HOLEY_ELEMENTS))));
+      Map::cast(native_context()->get(Context::ArrayMapIndex(HOLEY_ELEMENTS))),
+      isolate());
   effect = graph()->NewNode(
       simplified()->TransitionAndStoreElement(double_map, fast_map), a, k,
       callback_value, effect, control);
@@ -1713,7 +1714,8 @@ Reduction JSCallReducer::ReduceArrayFilter(Node* node,
   dependencies()->AssumePropertyCell(factory()->array_species_protector());
 
   Handle<Map> initial_map(
-      Map::cast(native_context()->GetInitialJSArrayMap(packed_kind)));
+      Map::cast(native_context()->GetInitialJSArrayMap(packed_kind)),
+      isolate());
 
   Node* k = jsgraph()->ZeroConstant();
   Node* to = jsgraph()->ZeroConstant();
@@ -1728,7 +1730,7 @@ Reduction JSCallReducer::ReduceArrayFilter(Node* node,
 
   Node* a;  // Construct the output array.
   {
-    AllocationBuilder ab(jsgraph(), effect, control);
+    AllocationBuilder ab(jsgraph(), js_heap_broker(), effect, control);
     ab.Allocate(initial_map->instance_size(), NOT_TENURED, Type::Array());
     ab.Store(AccessBuilder::ForMap(), initial_map);
     Node* empty_fixed_array = jsgraph()->EmptyFixedArrayConstant();
@@ -2843,7 +2845,7 @@ Reduction JSCallReducer::ReduceCallApiFunction(
   Node* control = NodeProperties::GetControlInput(node);
 
   Handle<FunctionTemplateInfo> function_template_info(
-      FunctionTemplateInfo::cast(shared->function_data()));
+      FunctionTemplateInfo::cast(shared->function_data()), isolate());
 
   // CallApiCallbackStub expects the target in a register, so we count it out,
   // and counts the receiver as an implicit argument, so we count the receiver
@@ -2872,7 +2874,7 @@ Reduction JSCallReducer::ReduceCallApiFunction(
   }
 
   // See if we can constant-fold the compatible receiver checks.
-  CallOptimization call_optimization(function_template_info);
+  CallOptimization call_optimization(isolate(), function_template_info);
   if (!call_optimization.is_simple_api_call()) return NoChange();
   CallOptimization::HolderLookup lookup;
   Handle<JSObject> api_holder =
@@ -2911,8 +2913,7 @@ Reduction JSCallReducer::ReduceCallApiFunction(
   auto call_descriptor = Linkage::GetStubCallDescriptor(
       graph()->zone(), cid,
       cid.GetStackParameterCount() + argc + 1 /* implicit receiver */,
-      CallDescriptor::kNeedsFrameState, Operator::kNoProperties,
-      MachineType::AnyTagged(), 1, Linkage::kNoContext);
+      CallDescriptor::kNeedsFrameState);
   ApiFunction api_function(v8::ToCData<Address>(call_handler_info->callback()));
   Node* holder = lookup == CallOptimization::kHolderFound
                      ? jsgraph()->HeapConstant(api_holder)
@@ -3427,6 +3428,12 @@ Reduction JSCallReducer::ReduceJSCall(Node* node,
       return ReduceArrayBufferViewAccessor(
           node, JS_DATA_VIEW_TYPE,
           AccessBuilder::ForJSArrayBufferViewByteOffset());
+    case Builtins::kDataViewPrototypeGetUint8:
+      return ReduceDataViewPrototypeGet(node,
+                                        ExternalArrayType::kExternalUint8Array);
+    case Builtins::kDataViewPrototypeGetInt8:
+      return ReduceDataViewPrototypeGet(node,
+                                        ExternalArrayType::kExternalInt8Array);
     case Builtins::kTypedArrayPrototypeByteLength:
       return ReduceArrayBufferViewAccessor(
           node, JS_TYPED_ARRAY_TYPE,
@@ -4236,8 +4243,7 @@ bool IsReadOnlyLengthDescriptor(Isolate* isolate, Handle<Map> jsarray_map) {
   DCHECK(!jsarray_map->is_dictionary_map());
   Handle<Name> length_string = isolate->factory()->length_string();
   DescriptorArray* descriptors = jsarray_map->instance_descriptors();
-  int number =
-      descriptors->SearchWithCache(isolate, *length_string, *jsarray_map);
+  int number = descriptors->Search(*length_string, *jsarray_map);
   DCHECK_NE(DescriptorArray::kNotFound, number);
   return descriptors->GetDetails(number).IsReadOnly();
 }
@@ -6657,12 +6663,11 @@ Reduction JSCallReducer::ReduceArrayBufferViewAccessor(
           factory()->array_buffer_neutering_protector());
     } else {
       // Check if the {receiver}s buffer was neutered.
-      Node* receiver_buffer = effect = graph()->NewNode(
+      Node* buffer = effect = graph()->NewNode(
           simplified()->LoadField(AccessBuilder::ForJSArrayBufferViewBuffer()),
           receiver, effect, control);
-      Node* check = effect =
-          graph()->NewNode(simplified()->ArrayBufferWasNeutered(),
-                           receiver_buffer, effect, control);
+      Node* check = effect = graph()->NewNode(
+          simplified()->ArrayBufferWasNeutered(), buffer, effect, control);
 
       // Default to zero if the {receiver}s buffer was neutered.
       value = graph()->NewNode(
@@ -6673,6 +6678,172 @@ Reduction JSCallReducer::ReduceArrayBufferViewAccessor(
     ReplaceWithValue(node, value, effect, control);
     return Replace(value);
   }
+  return NoChange();
+}
+
+Reduction JSCallReducer::ReduceDataViewPrototypeGet(
+    Node* node, ExternalArrayType element_type) {
+  Node* effect = NodeProperties::GetEffectInput(node);
+  Node* control = NodeProperties::GetControlInput(node);
+  Node* receiver = NodeProperties::GetValueInput(node, 1);
+
+  Node* context = NodeProperties::GetContextInput(node);
+  Node* frame_state = NodeProperties::GetFrameStateInput(node);
+
+  CallParameters const& p = CallParametersOf(node->op());
+
+  Node* offset = node->op()->ValueInputCount() > 2
+                     ? NodeProperties::GetValueInput(node, 2)
+                     : jsgraph()->ZeroConstant();
+
+  Node* is_little_endian = node->op()->ValueInputCount() > 3
+                               ? NodeProperties::GetValueInput(node, 3)
+                               : jsgraph()->FalseConstant();
+
+  // Only do stuff if the {receiver} is really a DataView.
+  if (NodeProperties::HasInstanceTypeWitness(isolate(), receiver, effect,
+                                             JS_DATA_VIEW_TYPE)) {
+    // Check that the {offset} is a positive Smi.
+    offset = effect = graph()->NewNode(simplified()->CheckSmi(p.feedback()),
+                                       offset, effect, control);
+
+    Node* is_positive = graph()->NewNode(simplified()->NumberLessThanOrEqual(),
+                                         jsgraph()->ZeroConstant(), offset);
+
+    effect = graph()->NewNode(
+        simplified()->CheckIf(DeoptimizeReason::kNotASmi, p.feedback()),
+        is_positive, effect, control);
+
+    // Coerce {is_little_endian} to boolean.
+    is_little_endian =
+        graph()->NewNode(simplified()->ToBoolean(), is_little_endian);
+
+    // Get the underlying buffer and check that it has not been neutered.
+    Node* buffer = effect = graph()->NewNode(
+        simplified()->LoadField(AccessBuilder::ForJSArrayBufferViewBuffer()),
+        receiver, effect, control);
+
+    Node* check_neutered = effect = graph()->NewNode(
+        simplified()->ArrayBufferWasNeutered(), buffer, effect, control);
+    Node* branch_neutered = graph()->NewNode(
+        common()->Branch(BranchHint::kFalse), check_neutered, control);
+
+    // Raise an error if it was neuteured.
+    Node* if_true_neutered =
+        graph()->NewNode(common()->IfTrue(), branch_neutered);
+    Node* etrue_neutered = effect;
+    {
+      if_true_neutered = etrue_neutered = graph()->NewNode(
+          javascript()->CallRuntime(Runtime::kThrowTypeError, 2),
+          jsgraph()->Constant(MessageTemplate::kDetachedOperation),
+          jsgraph()->HeapConstant(
+              factory()->NewStringFromAsciiChecked("DataView.prototype.get")),
+          context, frame_state, etrue_neutered, if_true_neutered);
+    }
+
+    // Otherwise, proceed.
+    Node* if_false_neutered =
+        graph()->NewNode(common()->IfFalse(), branch_neutered);
+    Node* efalse_neutered = effect;
+
+    // Get the byte offset and byte length of the {receiver}.
+    Node* byte_offset = efalse_neutered =
+        graph()->NewNode(simplified()->LoadField(
+                             AccessBuilder::ForJSArrayBufferViewByteOffset()),
+                         receiver, efalse_neutered, if_false_neutered);
+
+    Node* byte_length = efalse_neutered =
+        graph()->NewNode(simplified()->LoadField(
+                             AccessBuilder::ForJSArrayBufferViewByteLength()),
+                         receiver, efalse_neutered, if_false_neutered);
+
+    // The end offset is the offset plus the element size
+    // of the type that we want to load.
+    // Since we only load int8 and uint8 for now, that size is 1.
+    Node* end_offset = graph()->NewNode(simplified()->NumberAdd(), offset,
+                                        jsgraph()->OneConstant());
+
+    // We need to check that {end_offset} <= {byte_length}, ie
+    // throw a RangeError if {byte_length} < {end_offset}.
+    Node* check_range = graph()->NewNode(simplified()->NumberLessThan(),
+                                         byte_length, end_offset);
+    Node* branch_range = graph()->NewNode(common()->Branch(BranchHint::kFalse),
+                                          check_range, if_false_neutered);
+
+    Node* if_true_range = graph()->NewNode(common()->IfTrue(), branch_range);
+    Node* etrue_range = efalse_neutered;
+    {
+      if_true_range = etrue_range = graph()->NewNode(
+          javascript()->CallRuntime(Runtime::kThrowRangeError, 2),
+          jsgraph()->Constant(MessageTemplate::kInvalidDataViewAccessorOffset),
+          jsgraph()->HeapConstant(
+              factory()->NewStringFromAsciiChecked("DataView.prototype.get")),
+          context, frame_state, etrue_range, if_true_range);
+    }
+
+    Node* if_false_range = graph()->NewNode(common()->IfFalse(), branch_range);
+    Node* efalse_range = efalse_neutered;
+    Node* vfalse_range;
+    {
+      // Get the buffer's backing store.
+      Node* backing_store = efalse_range =
+          graph()->NewNode(simplified()->LoadField(
+                               AccessBuilder::ForJSArrayBufferBackingStore()),
+                           buffer, efalse_range, if_false_range);
+
+      // Compute the buffer index at which we'll read.
+      Node* buffer_index =
+          graph()->NewNode(simplified()->NumberAdd(), offset, byte_offset);
+
+      // Perform the load.
+      vfalse_range = efalse_range = graph()->NewNode(
+          simplified()->LoadElement(AccessBuilder::ForTypedArrayElement(
+              element_type, true, LoadSensitivity::kCritical)),
+          backing_store, buffer_index, efalse_range, if_false_range);
+    }
+
+    // Rewire potential exception edges.
+    Node* on_exception = nullptr;
+    if (NodeProperties::IsExceptionalCall(node, &on_exception)) {
+      // Create appropriate {IfException} and {IfSuccess} nodes.
+      Node* extrue_neutered = graph()->NewNode(
+          common()->IfException(), etrue_neutered,
+          if_true_neutered);  // We threw because the array was neutered.
+      if_true_neutered =
+          graph()->NewNode(common()->IfSuccess(), if_true_neutered);
+
+      Node* extrue_range =
+          graph()->NewNode(common()->IfException(), etrue_range,
+                           if_true_range);  // We threw because out of bounds.
+      if_true_range = graph()->NewNode(common()->IfSuccess(), if_true_range);
+
+      // We can't throw in LoadTypedElement(),
+      // so we don't need to handle that path here.
+
+      // Join the exception edges.
+      Node* merge =
+          graph()->NewNode(common()->Merge(2), extrue_neutered, extrue_range);
+      Node* ephi = graph()->NewNode(common()->EffectPhi(2), extrue_neutered,
+                                    extrue_range, merge);
+      Node* phi =
+          graph()->NewNode(common()->Phi(MachineRepresentation::kTagged, 2),
+                           extrue_neutered, extrue_range, merge);
+      ReplaceWithValue(on_exception, phi, ephi, merge);
+    }
+
+    // Connect the throwing paths to end.
+    if_true_neutered =
+        graph()->NewNode(common()->Throw(), etrue_neutered, if_true_neutered);
+    NodeProperties::MergeControlToEnd(graph(), common(), if_true_neutered);
+    if_true_range =
+        graph()->NewNode(common()->Throw(), etrue_range, if_true_range);
+    NodeProperties::MergeControlToEnd(graph(), common(), if_true_range);
+
+    // Continue on the regular path.
+    ReplaceWithValue(node, vfalse_range, efalse_range, if_false_range);
+    return Changed(vfalse_range);
+  }
+
   return NoChange();
 }
 
@@ -6832,8 +7003,8 @@ Reduction JSCallReducer::ReduceRegExpPrototypeTest(Node* node) {
   // Add proper dependencies on the {regexp}s [[Prototype]]s.
   Handle<JSObject> holder;
   if (ai_exec.holder().ToHandle(&holder)) {
-    access_builder.AssumePrototypesStable(native_context(),
-                                          ai_exec.receiver_maps(), holder);
+    dependencies()->AssumePrototypesStable(native_context(),
+                                           ai_exec.receiver_maps(), holder);
   }
 
   if (need_map_check) {

@@ -296,7 +296,6 @@ v8::StartupData Snapshot::CreateSnapshotBlob(
   return result;
 }
 
-#ifdef V8_EMBEDDED_BUILTINS
 namespace {
 bool BuiltinAliasesOffHeapTrampolineRegister(Isolate* isolate, Code* code) {
   DCHECK(Builtins::IsIsolateIndependent(code->builtin_index()));
@@ -346,7 +345,7 @@ void FinalizeEmbeddedCodeTargets(Isolate* isolate, EmbeddedData* blob) {
       RelocInfo* rinfo = on_heap_it.rinfo();
       DCHECK(RelocInfo::IsCodeTarget(rinfo->rmode()));
       Code* target = Code::GetCodeFromTargetAddress(rinfo->target_address());
-      CHECK(Builtins::IsEmbeddedBuiltin(target));
+      CHECK(Builtins::IsIsolateIndependentBuiltin(target));
 
       off_heap_it.rinfo()->set_target_address(
           blob->InstructionStartOfBuiltin(target->builtin_index()));
@@ -384,7 +383,7 @@ EmbeddedData EmbeddedData::FromIsolate(Isolate* isolate) {
 
       // Sanity-check that the given builtin is isolate-independent and does not
       // use the trampoline register in its calling convention.
-      if (!code->IsProcessIndependent(isolate)) {
+      if (!code->IsIsolateIndependent(isolate)) {
         saw_unsafe_builtin = true;
         fprintf(stderr, "%s is not isolate-independent.\n", Builtins::name(i));
       }
@@ -480,7 +479,6 @@ size_t EmbeddedData::CreateHash() const {
   STATIC_ASSERT(HashSize() == kSizetSize);
   return base::hash_range(data_ + HashSize(), data_ + size_);
 }
-#endif
 
 uint32_t Snapshot::ExtractNumContexts(const v8::StartupData* data) {
   CHECK_LT(kNumberOfContextsOffset, data->raw_size);

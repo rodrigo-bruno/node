@@ -191,19 +191,32 @@ void CallOrConstructBuiltinsAssembler::CallOrConstructWithArrayLike(
     Label if_not_double(this), if_double(this);
     TNode<Int32T> args_count = Int32Constant(0);  // args already on the stack
 
-    TNode<FixedArrayBase> elements = var_elements.value();
     TNode<Int32T> length = var_length.value();
-    GotoIf(Word32Equal(length, Int32Constant(0)), &if_not_double);
+    {
+      Label normalize_done(this);
+      GotoIfNot(Word32Equal(length, Int32Constant(0)), &normalize_done);
+      // Make sure we don't accidentally pass along the
+      // empty_fixed_double_array since the tailed-called stubs cannot handle
+      // the normalization yet.
+      var_elements = EmptyFixedArrayConstant();
+      Goto(&normalize_done);
+
+      BIND(&normalize_done);
+    }
+
+    TNode<FixedArrayBase> elements = var_elements.value();
     Branch(IsFixedDoubleArray(elements), &if_double, &if_not_double);
 
     BIND(&if_not_double);
-    if (new_target == nullptr) {
-      Callable callable = CodeFactory::CallVarargs(isolate());
-      TailCallStub(callable, context, target, args_count, elements, length);
-    } else {
-      Callable callable = CodeFactory::ConstructVarargs(isolate());
-      TailCallStub(callable, context, target, new_target, args_count, elements,
-                   length);
+    {
+      if (new_target == nullptr) {
+        Callable callable = CodeFactory::CallVarargs(isolate());
+        TailCallStub(callable, context, target, args_count, elements, length);
+      } else {
+        Callable callable = CodeFactory::ConstructVarargs(isolate());
+        TailCallStub(callable, context, target, new_target, args_count,
+                     elements, length);
+      }
     }
 
     BIND(&if_double);
@@ -317,8 +330,8 @@ void CallOrConstructBuiltinsAssembler::CallOrConstructWithSpread(
     TNode<Object> iterator_fn =
         GetProperty(context, spread, IteratorSymbolConstant());
     GotoIfNot(TaggedIsCallable(iterator_fn), &if_iterator_fn_not_callable);
-    TNode<JSArray> list = CAST(CallBuiltin(Builtins::kIterableToListUnsafe,
-                                           context, spread, iterator_fn));
+    TNode<JSArray> list = CAST(
+        CallBuiltin(Builtins::kIterableToList, context, spread, iterator_fn));
     var_length = LoadAndUntagToWord32ObjectField(list, JSArray::kLengthOffset);
 
     var_elements = LoadElements(list);

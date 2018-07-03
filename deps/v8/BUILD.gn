@@ -1062,6 +1062,11 @@ template("run_mksnapshot") {
         "--no-turbo-rewrite-far-jumps",
         "--no-turbo-verify-allocation",
       ]
+
+      if (v8_enable_debugging_features && v8_enable_slow_dchecks) {
+        # mksnapshot only accepts this flag if ENABLE_SLOW_DCHECKS is defined.
+        args += [ "--no-enable-slow-asserts" ]
+      }
     }
   }
 }
@@ -1204,6 +1209,8 @@ if (v8_use_snapshot && !v8_use_external_startup_data) {
 
     if (v8_enable_embedded_builtins) {
       sources += [ "$target_gen_dir/embedded.cc" ]
+    } else {
+      sources += [ "src/snapshot/embedded-empty.cc" ]
     }
 
     if (use_jumbo_build == true) {
@@ -1260,6 +1267,8 @@ if (v8_use_snapshot && v8_use_external_startup_data) {
           ]
         }
       }
+    } else {
+      sources += [ "src/snapshot/embedded-empty.cc" ]
     }
 
     configs = [ ":internal_config" ]
@@ -1513,8 +1522,6 @@ v8_source_set("v8_base") {
     "src/ast/ast-value-factory.h",
     "src/ast/ast.cc",
     "src/ast/ast.h",
-    "src/ast/compile-time-value.cc",
-    "src/ast/compile-time-value.h",
     "src/ast/context-slot-cache.cc",
     "src/ast/context-slot-cache.h",
     "src/ast/modules.cc",
@@ -2119,6 +2126,7 @@ v8_source_set("v8_base") {
     "src/objects/frame-array.h",
     "src/objects/hash-table-inl.h",
     "src/objects/hash-table.h",
+    "src/objects/intl-objects-inl.h",
     "src/objects/intl-objects.cc",
     "src/objects/intl-objects.h",
     "src/objects/js-array-inl.h",
@@ -2447,8 +2455,6 @@ v8_source_set("v8_base") {
     "src/wasm/value-type.h",
     "src/wasm/wasm-code-manager.cc",
     "src/wasm/wasm-code-manager.h",
-    "src/wasm/wasm-code-specialization.cc",
-    "src/wasm/wasm-code-specialization.h",
     "src/wasm/wasm-constants.h",
     "src/wasm/wasm-debug.cc",
     "src/wasm/wasm-engine.cc",
@@ -2520,6 +2526,7 @@ v8_source_set("v8_base") {
       "src/ia32/assembler-ia32.h",
       "src/ia32/code-stubs-ia32.cc",
       "src/ia32/codegen-ia32.cc",
+      "src/ia32/constants-ia32.h",
       "src/ia32/cpu-ia32.cc",
       "src/ia32/deoptimizer-ia32.cc",
       "src/ia32/disasm-ia32.cc",
@@ -2553,6 +2560,7 @@ v8_source_set("v8_base") {
       "src/x64/assembler-x64.h",
       "src/x64/code-stubs-x64.cc",
       "src/x64/codegen-x64.cc",
+      "src/x64/constants-x64.h",
       "src/x64/cpu-x64.cc",
       "src/x64/deoptimizer-x64.cc",
       "src/x64/disasm-x64.cc",
@@ -2592,7 +2600,6 @@ v8_source_set("v8_base") {
       "src/arm/frame-constants-arm.cc",
       "src/arm/frame-constants-arm.h",
       "src/arm/interface-descriptors-arm.cc",
-      "src/arm/interface-descriptors-arm.h",
       "src/arm/macro-assembler-arm.cc",
       "src/arm/macro-assembler-arm.h",
       "src/arm/simulator-arm.cc",
@@ -2633,7 +2640,6 @@ v8_source_set("v8_base") {
       "src/arm64/instrument-arm64.cc",
       "src/arm64/instrument-arm64.h",
       "src/arm64/interface-descriptors-arm64.cc",
-      "src/arm64/interface-descriptors-arm64.h",
       "src/arm64/macro-assembler-arm64-inl.h",
       "src/arm64/macro-assembler-arm64.cc",
       "src/arm64/macro-assembler-arm64.h",
@@ -2803,6 +2809,7 @@ v8_source_set("v8_base") {
       "src/char-predicates.cc",
       "src/intl.cc",
       "src/intl.h",
+      "src/objects/intl-objects-inl.h",
       "src/objects/intl-objects.cc",
       "src/objects/intl-objects.h",
       "src/objects/js-locale-inl.h",

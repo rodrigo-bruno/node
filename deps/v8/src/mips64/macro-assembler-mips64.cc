@@ -25,9 +25,10 @@
 namespace v8 {
 namespace internal {
 
-MacroAssembler::MacroAssembler(Isolate* isolate, void* buffer, int size,
+MacroAssembler::MacroAssembler(Isolate* isolate, const Options& options,
+                               void* buffer, int size,
                                CodeObjectRequired create_code_object)
-    : TurboAssembler(isolate, buffer, size, create_code_object) {
+    : TurboAssembler(isolate, options, buffer, size, create_code_object) {
   if (create_code_object == CodeObjectRequired::kYes) {
     // Unlike TurboAssembler, which can be used off the main thread and may not
     // allocate, macro assembler creates its own copy of the self-reference
@@ -126,14 +127,14 @@ int TurboAssembler::PopCallerSaved(SaveFPRegsMode fp_mode, Register exclusion1,
 }
 
 void TurboAssembler::LoadRoot(Register destination, Heap::RootListIndex index) {
-  Ld(destination, MemOperand(s6, index << kPointerSizeLog2));
+  Ld(destination, MemOperand(s6, RootRegisterOffset(index)));
 }
 
 void TurboAssembler::LoadRoot(Register destination, Heap::RootListIndex index,
                               Condition cond, Register src1,
                               const Operand& src2) {
   Branch(2, NegateCondition(cond), src1, src2);
-  Ld(destination, MemOperand(s6, index << kPointerSizeLog2));
+  Ld(destination, MemOperand(s6, RootRegisterOffset(index)));
 }
 
 
@@ -1116,23 +1117,14 @@ void TurboAssembler::Bnvc(Register rs, Register rt, Label* L) {
 // Change endianness
 void TurboAssembler::ByteSwapSigned(Register dest, Register src,
                                     int operand_size) {
-  DCHECK(operand_size == 1 || operand_size == 2 || operand_size == 4 ||
-         operand_size == 8);
+  DCHECK(operand_size == 2 || operand_size == 4 || operand_size == 8);
   DCHECK(kArchVariant == kMips64r6 || kArchVariant == kMips64r2);
-  if (operand_size == 1) {
-    seb(src, src);
-    sll(src, src, 0);
-    dsbh(dest, src);
-    dshd(dest, dest);
-  } else if (operand_size == 2) {
-    seh(src, src);
-    sll(src, src, 0);
-    dsbh(dest, src);
-    dshd(dest, dest);
+  if (operand_size == 2) {
+    wsbh(dest, src);
+    seh(dest, dest);
   } else if (operand_size == 4) {
-    sll(src, src, 0);
-    dsbh(dest, src);
-    dshd(dest, dest);
+    wsbh(dest, src);
+    rotr(dest, dest, 16);
   } else {
     dsbh(dest, src);
     dshd(dest, dest);
@@ -1141,20 +1133,14 @@ void TurboAssembler::ByteSwapSigned(Register dest, Register src,
 
 void TurboAssembler::ByteSwapUnsigned(Register dest, Register src,
                                       int operand_size) {
-  DCHECK(operand_size == 1 || operand_size == 2 || operand_size == 4);
-  if (operand_size == 1) {
-    andi(src, src, 0xFF);
-    dsbh(dest, src);
-    dshd(dest, dest);
-  } else if (operand_size == 2) {
-    andi(src, src, 0xFFFF);
-    dsbh(dest, src);
-    dshd(dest, dest);
+  DCHECK(operand_size == 2 || operand_size == 4);
+  if (operand_size == 2) {
+    wsbh(dest, src);
+    andi(dest, dest, 0xFFFF);
   } else {
-    dsll32(src, src, 0);
-    dsrl32(src, src, 0);
-    dsbh(dest, src);
-    dshd(dest, dest);
+    wsbh(dest, src);
+    rotr(dest, dest, 16);
+    dinsu_(dest, zero_reg, 32, 32);
   }
 }
 
@@ -1560,22 +1546,22 @@ void TurboAssembler::Scd(Register rd, const MemOperand& rs) {
 }
 
 void TurboAssembler::li(Register dst, Handle<HeapObject> value, LiFlags mode) {
-#ifdef V8_EMBEDDED_BUILTINS
-  if (root_array_available_ && isolate()->ShouldLoadConstantsFromRootList()) {
-    IndirectLoadConstant(dst, value);
-    return;
+  if (FLAG_embedded_builtins) {
+    if (root_array_available_ && options().isolate_independent_code) {
+      IndirectLoadConstant(dst, value);
+      return;
+    }
   }
-#endif  // V8_EMBEDDED_BUILTINS
   li(dst, Operand(value), mode);
 }
 
 void TurboAssembler::li(Register dst, ExternalReference value, LiFlags mode) {
-#ifdef V8_EMBEDDED_BUILTINS
-  if (root_array_available_ && isolate()->ShouldLoadConstantsFromRootList()) {
-    IndirectLoadExternalReference(dst, value);
-    return;
+  if (FLAG_embedded_builtins) {
+    if (root_array_available_ && options().isolate_independent_code) {
+      IndirectLoadExternalReference(dst, value);
+      return;
+    }
   }
-#endif  // V8_EMBEDDED_BUILTINS
   li(dst, Operand(value), mode);
 }
 
@@ -4111,7 +4097,6 @@ bool TurboAssembler::BranchAndLinkShortCheck(int32_t offset, Label* L,
   return false;
 }
 
-#ifdef V8_EMBEDDED_BUILTINS
 void TurboAssembler::LoadFromConstantsTable(Register destination,
                                             int constant_index) {
   DCHECK(isolate()->heap()->RootCanBeTreatedAsConstant(
@@ -4122,20 +4107,8 @@ void TurboAssembler::LoadFromConstantsTable(Register destination,
                      FixedArray::kHeaderSize + constant_index * kPointerSize));
 }
 
-void TurboAssembler::LoadExternalReference(Register destination,
-                                           int reference_index) {
-  int32_t roots_to_external_reference_offset =
-      Heap::roots_to_external_reference_table_offset() +
-      ExternalReferenceTable::OffsetOfEntry(reference_index);
-  Ld(destination,
-     MemOperand(kRootRegister, roots_to_external_reference_offset));
-}
-
-void TurboAssembler::LoadBuiltin(Register destination, int builtin_index) {
-  DCHECK(Builtins::IsBuiltinId(builtin_index));
-  int32_t roots_to_builtins_offset =
-      Heap::roots_to_builtins_offset() + builtin_index * kPointerSize;
-  Ld(destination, MemOperand(kRootRegister, roots_to_builtins_offset));
+void TurboAssembler::LoadRootRelative(Register destination, int32_t offset) {
+  Ld(destination, MemOperand(kRootRegister, offset));
 }
 
 void TurboAssembler::LoadRootRegisterOffset(Register destination,
@@ -4146,7 +4119,6 @@ void TurboAssembler::LoadRootRegisterOffset(Register destination,
     Daddu(destination, kRootRegister, Operand(offset));
   }
 }
-#endif  // V8_EMBEDDED_BUILTINS
 
 void TurboAssembler::Jump(Register target, Condition cond, Register rs,
                           const Operand& rt, BranchDelaySlot bd) {
@@ -4196,29 +4168,26 @@ void TurboAssembler::Jump(Handle<Code> code, RelocInfo::Mode rmode,
                           Condition cond, Register rs, const Operand& rt,
                           BranchDelaySlot bd) {
   DCHECK(RelocInfo::IsCodeTarget(rmode));
-#ifdef V8_EMBEDDED_BUILTINS
-  if (root_array_available_ && isolate()->ShouldLoadConstantsFromRootList()) {
-    IndirectLoadConstant(t9, code);
-    Daddu(t9, t9, Operand(Code::kHeaderSize - kHeapObjectTag));
-    Jump(t9, cond, rs, rt, bd);
-    return;
-  } else if (!isolate()->serializer_enabled()) {
-    int builtin_index = Builtins::kNoBuiltinId;
-    if (isolate()->builtins()->IsBuiltinHandle(code, &builtin_index) &&
-        Builtins::IsIsolateIndependent(builtin_index)) {
-      // Inline the trampoline.
-      CHECK_NE(builtin_index, Builtins::kNoBuiltinId);
-      EmbeddedData d = EmbeddedData::FromBlob();
-      Address entry = d.InstructionStartOfBuiltin(builtin_index);
-      // RelocInfo is only necessary if generating code for the snapshot.
-      // Otherwise, the target address is immortal-immovable and never needs to
-      // be fixed up by GC (or deserialization).
-      li(t9, Operand(entry, RelocInfo::NONE));
+  if (FLAG_embedded_builtins) {
+    if (root_array_available_ && options().isolate_independent_code) {
+      IndirectLoadConstant(t9, code);
+      Daddu(t9, t9, Operand(Code::kHeaderSize - kHeapObjectTag));
       Jump(t9, cond, rs, rt, bd);
       return;
+    } else if (options().inline_offheap_trampolines) {
+      int builtin_index = Builtins::kNoBuiltinId;
+      if (isolate()->builtins()->IsBuiltinHandle(code, &builtin_index) &&
+          Builtins::IsIsolateIndependent(builtin_index)) {
+        // Inline the trampoline.
+        CHECK_NE(builtin_index, Builtins::kNoBuiltinId);
+        EmbeddedData d = EmbeddedData::FromBlob();
+        Address entry = d.InstructionStartOfBuiltin(builtin_index);
+        li(t9, Operand(entry, RelocInfo::OFF_HEAP_TARGET));
+        Jump(t9, cond, rs, rt, bd);
+        return;
+      }
     }
   }
-#endif  // V8_EMBEDDED_BUILTINS
   Jump(static_cast<intptr_t>(code.address()), rmode, cond, rs, rt, bd);
 }
 
@@ -4302,29 +4271,26 @@ void TurboAssembler::Call(Handle<Code> code, RelocInfo::Mode rmode,
                           Condition cond, Register rs, const Operand& rt,
                           BranchDelaySlot bd) {
   BlockTrampolinePoolScope block_trampoline_pool(this);
-#ifdef V8_EMBEDDED_BUILTINS
-  if (root_array_available_ && isolate()->ShouldLoadConstantsFromRootList()) {
-    IndirectLoadConstant(t9, code);
-    Daddu(t9, t9, Operand(Code::kHeaderSize - kHeapObjectTag));
-    Call(t9, cond, rs, rt, bd);
-    return;
-  } else if (!isolate()->serializer_enabled()) {
-    int builtin_index = Builtins::kNoBuiltinId;
-    if (isolate()->builtins()->IsBuiltinHandle(code, &builtin_index) &&
-        Builtins::IsIsolateIndependent(builtin_index)) {
-      // Inline the trampoline.
-      CHECK_NE(builtin_index, Builtins::kNoBuiltinId);
-      EmbeddedData d = EmbeddedData::FromBlob();
-      Address entry = d.InstructionStartOfBuiltin(builtin_index);
-      // RelocInfo is only necessary if generating code for the snapshot.
-      // Otherwise, the target address is immortal-immovable and never needs to
-      // be fixed up by GC (or deserialization).
-      li(t9, Operand(entry, RelocInfo::NONE));
+  if (FLAG_embedded_builtins) {
+    if (root_array_available_ && options().isolate_independent_code) {
+      IndirectLoadConstant(t9, code);
+      Daddu(t9, t9, Operand(Code::kHeaderSize - kHeapObjectTag));
       Call(t9, cond, rs, rt, bd);
       return;
+    } else if (options().inline_offheap_trampolines) {
+      int builtin_index = Builtins::kNoBuiltinId;
+      if (isolate()->builtins()->IsBuiltinHandle(code, &builtin_index) &&
+          Builtins::IsIsolateIndependent(builtin_index)) {
+        // Inline the trampoline.
+        CHECK_NE(builtin_index, Builtins::kNoBuiltinId);
+        EmbeddedData d = EmbeddedData::FromBlob();
+        Address entry = d.InstructionStartOfBuiltin(builtin_index);
+        li(t9, Operand(entry, RelocInfo::OFF_HEAP_TARGET));
+        Call(t9, cond, rs, rt, bd);
+        return;
+      }
     }
   }
-#endif  // V8_EMBEDDED_BUILTINS
   Label start;
   bind(&start);
   DCHECK(RelocInfo::IsCodeTarget(rmode));
@@ -5390,18 +5356,6 @@ void MacroAssembler::AssertSmi(Register object) {
     Register scratch = temps.Acquire();
     andi(scratch, object, kSmiTagMask);
     Check(eq, AbortReason::kOperandIsASmi, scratch, Operand(zero_reg));
-  }
-}
-
-void MacroAssembler::AssertFixedArray(Register object) {
-  if (emit_debug_code()) {
-    STATIC_ASSERT(kSmiTag == 0);
-    SmiTst(object, t8);
-    Check(ne, AbortReason::kOperandIsASmiAndNotAFixedArray, t8,
-          Operand(zero_reg));
-    GetObjectType(object, t8, t8);
-    Check(eq, AbortReason::kOperandIsNotAFixedArray, t8,
-          Operand(FIXED_ARRAY_TYPE));
   }
 }
 

@@ -133,10 +133,10 @@ bool JsonStringifier::InitializeReplacer(Handle<Object> replacer) {
       if (key.is_null()) continue;
       // Object keys are internalized, so do it here.
       key = factory()->InternalizeString(key);
-      set = OrderedHashSet::Add(set, key);
+      set = OrderedHashSet::Add(isolate_, set, key);
     }
     property_list_ = OrderedHashSet::ConvertToKeysArray(
-        set, GetKeysConversion::kKeepNumbers);
+        isolate_, set, GetKeysConversion::kKeepNumbers);
     property_list_ = handle_scope.CloseAndEscape(property_list_);
   } else if (replacer->IsCallable()) {
     replacer_function_ = Handle<JSReceiver>::cast(replacer);
@@ -528,7 +528,7 @@ JsonStringifier::Result JsonStringifier::SerializeJSObject(
     Handle<JSObject> js_obj = Handle<JSObject>::cast(object);
     DCHECK(!js_obj->HasIndexedInterceptor());
     DCHECK(!js_obj->HasNamedInterceptor());
-    Handle<Map> map(js_obj->map());
+    Handle<Map> map(js_obj->map(), isolate_);
     builder_.AppendCharacter('{');
     Indent();
     bool comma = false;
@@ -704,7 +704,7 @@ void JsonStringifier::SerializeDeferredKey(bool deferred_comma,
 }
 
 void JsonStringifier::SerializeString(Handle<String> object) {
-  object = String::Flatten(object);
+  object = String::Flatten(isolate_, object);
   if (builder_.CurrentEncoding() == String::ONE_BYTE_ENCODING) {
     if (object->IsOneByteRepresentationUnderneath()) {
       SerializeString_<uint8_t, uint8_t>(object);

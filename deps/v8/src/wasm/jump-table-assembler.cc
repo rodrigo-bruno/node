@@ -11,23 +11,6 @@ namespace v8 {
 namespace internal {
 namespace wasm {
 
-void JumpTableAssembler::EmitJumpTrampoline(Address target) {
-#if V8_TARGET_ARCH_X64
-  movq(kScratchRegister, static_cast<uint64_t>(target));
-  jmp(kScratchRegister);
-#elif V8_TARGET_ARCH_ARM64
-  UseScratchRegisterScope temps(this);
-  Register scratch = temps.AcquireX();
-  Mov(scratch, static_cast<uint64_t>(target));
-  Br(scratch);
-#elif V8_TARGET_ARCH_S390X
-  mov(ip, Operand(bit_cast<intptr_t, Address>(target)));
-  b(ip);
-#else
-  UNIMPLEMENTED();
-#endif
-}
-
 // The implementation is compact enough to implement it inline here. If it gets
 // much bigger, we might want to split it in a separate file per architecture.
 #if V8_TARGET_ARCH_X64
@@ -158,6 +141,27 @@ void JumpTableAssembler::NopBytes(int bytes) {
   DCHECK_EQ(0, bytes % 2);
   for (; bytes > 0; bytes -= 2) {
     nop(0);
+  }
+}
+
+#elif V8_TARGET_ARCH_MIPS || V8_TARGET_ARCH_MIPS64
+void JumpTableAssembler::EmitLazyCompileJumpSlot(uint32_t func_index,
+                                                 Address lazy_compile_target) {
+  li(t0, func_index);  // max. 2 instr
+  // Jump produces max. 4 instructions for 32-bit platform
+  // and max. 6 instructions for 64-bit platform.
+  Jump(lazy_compile_target, RelocInfo::NONE);
+}
+
+void JumpTableAssembler::EmitJumpSlot(Address target) {
+  Jump(target, RelocInfo::NONE);
+}
+
+void JumpTableAssembler::NopBytes(int bytes) {
+  DCHECK_LE(0, bytes);
+  DCHECK_EQ(0, bytes % kInstrSize);
+  for (; bytes > 0; bytes -= kInstrSize) {
+    nop();
   }
 }
 

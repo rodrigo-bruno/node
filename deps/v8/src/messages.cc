@@ -192,7 +192,7 @@ Object* EvalFromFunctionName(Isolate* isolate, Handle<Script> script) {
   if (!script->has_eval_from_shared())
     return isolate->heap()->undefined_value();
 
-  Handle<SharedFunctionInfo> shared(script->eval_from_shared());
+  Handle<SharedFunctionInfo> shared(script->eval_from_shared(), isolate);
   // Find the name of the function calling eval.
   if (shared->Name()->BooleanValue(isolate)) {
     return shared->Name();
@@ -205,7 +205,8 @@ Object* EvalFromScript(Isolate* isolate, Handle<Script> script) {
   if (!script->has_eval_from_shared())
     return isolate->heap()->undefined_value();
 
-  Handle<SharedFunctionInfo> eval_from_shared(script->eval_from_shared());
+  Handle<SharedFunctionInfo> eval_from_shared(script->eval_from_shared(),
+                                              isolate);
   return eval_from_shared->script()->IsScript()
              ? eval_from_shared->script()
              : isolate->heap()->undefined_value();
@@ -525,10 +526,10 @@ int StringIndexOf(Isolate* isolate, Handle<String> subject,
 // 2. subject == pattern.
 bool StringEndsWithMethodName(Isolate* isolate, Handle<String> subject,
                               Handle<String> pattern) {
-  if (String::Equals(subject, pattern)) return true;
+  if (String::Equals(isolate, subject, pattern)) return true;
 
-  FlatStringReader subject_reader(isolate, String::Flatten(subject));
-  FlatStringReader pattern_reader(isolate, String::Flatten(pattern));
+  FlatStringReader subject_reader(isolate, String::Flatten(isolate, subject));
+  FlatStringReader pattern_reader(isolate, String::Flatten(isolate, pattern));
 
   int pattern_index = pattern_reader.length() - 1;
   int subject_index = subject_reader.length() - 1;
@@ -650,7 +651,7 @@ void WasmStackFrame::FromFrameArray(Isolate* isolate, Handle<FrameArray> array,
   if (array->IsWasmInterpretedFrame(frame_ix)) {
     code_ = nullptr;
   } else {
-    code_ = wasm_instance_->compiled_module()->GetNativeModule()->code(
+    code_ = wasm_instance_->module_object()->native_module()->code(
         wasm_func_index_);
   }
   offset_ = array->Offset(frame_ix)->value();
@@ -944,7 +945,8 @@ MaybeHandle<Object> ErrorUtils::FormatStackTrace(Isolate* isolate,
   Handle<JSArray> raw_stack_array = Handle<JSArray>::cast(raw_stack);
 
   DCHECK(raw_stack_array->elements()->IsFixedArray());
-  Handle<FrameArray> elems(FrameArray::cast(raw_stack_array->elements()));
+  Handle<FrameArray> elems(FrameArray::cast(raw_stack_array->elements()),
+                           isolate);
 
   // If there's a user-specified "prepareStackFrames" function, call it on the
   // frames and use its result.
@@ -1041,7 +1043,7 @@ Handle<String> MessageTemplate::FormatMessage(Isolate* isolate,
   // here to improve the efficiency of converting it to a C string and
   // other operations that are likely to take place (see GetLocalizedMessage
   // for example).
-  return String::Flatten(result_string);
+  return String::Flatten(isolate, result_string);
 }
 
 

@@ -27,10 +27,10 @@
 namespace v8 {
 namespace internal {
 
-MacroAssembler::MacroAssembler(Isolate* isolate, byte* buffer,
-                               unsigned buffer_size,
+MacroAssembler::MacroAssembler(Isolate* isolate, const Options& options,
+                               void* buffer, int size,
                                CodeObjectRequired create_code_object)
-    : TurboAssembler(isolate, buffer, buffer_size, create_code_object) {
+    : TurboAssembler(isolate, options, buffer, size, create_code_object) {
   if (create_code_object == CodeObjectRequired::kYes) {
     // Unlike TurboAssembler, which can be used off the main thread and may not
     // allocate, macro assembler creates its own copy of the self-reference
@@ -348,12 +348,12 @@ void TurboAssembler::Mov(const Register& rd, const Operand& operand,
 }
 
 void TurboAssembler::Mov(const Register& rd, ExternalReference reference) {
-#ifdef V8_EMBEDDED_BUILTINS
-  if (root_array_available_ && isolate()->ShouldLoadConstantsFromRootList()) {
-    IndirectLoadExternalReference(rd, reference);
-    return;
+  if (FLAG_embedded_builtins) {
+    if (root_array_available_ && options().isolate_independent_code) {
+      IndirectLoadExternalReference(rd, reference);
+      return;
+    }
   }
-#endif  // V8_EMBEDDED_BUILTINS
   Mov(rd, Operand(reference));
 }
 
@@ -1555,7 +1555,7 @@ void TurboAssembler::CanonicalizeNaN(const VRegister& dst,
 void TurboAssembler::LoadRoot(Register destination, Heap::RootListIndex index) {
   // TODO(jbramley): Most root values are constants, and can be synthesized
   // without a load. Refer to the ARM back end for details.
-  Ldr(destination, MemOperand(kRootRegister, index << kPointerSizeLog2));
+  Ldr(destination, MemOperand(kRootRegister, RootRegisterOffset(index)));
 }
 
 
@@ -1571,12 +1571,12 @@ void MacroAssembler::LoadObject(Register result, Handle<Object> object) {
 void TurboAssembler::Move(Register dst, Register src) { Mov(dst, src); }
 
 void TurboAssembler::Move(Register dst, Handle<HeapObject> value) {
-#ifdef V8_EMBEDDED_BUILTINS
-  if (root_array_available_ && isolate()->ShouldLoadConstantsFromRootList()) {
-    IndirectLoadConstant(dst, value);
-    return;
+  if (FLAG_embedded_builtins) {
+    if (root_array_available_ && options().isolate_independent_code) {
+      IndirectLoadConstant(dst, value);
+      return;
+    }
   }
-#endif  // V8_EMBEDDED_BUILTINS
   Mov(dst, value);
 }
 
@@ -1623,18 +1623,6 @@ void MacroAssembler::AssertNotSmi(Register object, AbortReason reason) {
     STATIC_ASSERT(kSmiTag == 0);
     Tst(object, kSmiTagMask);
     Check(ne, reason);
-  }
-}
-
-void MacroAssembler::AssertFixedArray(Register object) {
-  if (emit_debug_code()) {
-    AssertNotSmi(object, AbortReason::kOperandIsASmiAndNotAFixedArray);
-
-    UseScratchRegisterScope temps(this);
-    Register temp = temps.AcquireX();
-
-    CompareObjectType(object, temp, temp, FIXED_ARRAY_TYPE);
-    Check(eq, AbortReason::kOperandIsNotAFixedArray);
   }
 }
 
@@ -1865,7 +1853,6 @@ void TurboAssembler::CallCFunction(Register function, int num_of_reg_args,
   }
 }
 
-#ifdef V8_EMBEDDED_BUILTINS
 void TurboAssembler::LoadFromConstantsTable(Register destination,
                                             int constant_index) {
   DCHECK(isolate()->heap()->RootCanBeTreatedAsConstant(
@@ -1876,20 +1863,8 @@ void TurboAssembler::LoadFromConstantsTable(Register destination,
                       FixedArray::kHeaderSize + constant_index * kPointerSize));
 }
 
-void TurboAssembler::LoadExternalReference(Register destination,
-                                           int reference_index) {
-  int32_t roots_to_external_reference_offset =
-      Heap::roots_to_external_reference_table_offset() +
-      ExternalReferenceTable::OffsetOfEntry(reference_index);
-  Ldr(destination,
-      MemOperand(kRootRegister, roots_to_external_reference_offset));
-}
-
-void TurboAssembler::LoadBuiltin(Register destination, int builtin_index) {
-  DCHECK(Builtins::IsBuiltinId(builtin_index));
-  int32_t roots_to_builtins_offset =
-      Heap::roots_to_builtins_offset() + builtin_index * kPointerSize;
-  Ldr(destination, MemOperand(kRootRegister, roots_to_builtins_offset));
+void TurboAssembler::LoadRootRelative(Register destination, int32_t offset) {
+  Ldr(destination, MemOperand(kRootRegister, offset));
 }
 
 void TurboAssembler::LoadRootRegisterOffset(Register destination,
@@ -1900,7 +1875,6 @@ void TurboAssembler::LoadRootRegisterOffset(Register destination,
     Add(destination, kRootRegister, Operand(offset));
   }
 }
-#endif  // V8_EMBEDDED_BUILTINS
 
 void TurboAssembler::Jump(Register target, Condition cond) {
   if (cond == nv) return;
@@ -1956,33 +1930,30 @@ void TurboAssembler::Jump(Address target, RelocInfo::Mode rmode,
 void TurboAssembler::Jump(Handle<Code> code, RelocInfo::Mode rmode,
                           Condition cond) {
   DCHECK(RelocInfo::IsCodeTarget(rmode));
-#ifdef V8_EMBEDDED_BUILTINS
-  if (root_array_available_ && isolate()->ShouldLoadConstantsFromRootList()) {
-    UseScratchRegisterScope temps(this);
-    Register scratch = temps.AcquireX();
-    IndirectLoadConstant(scratch, code);
-    Add(scratch, scratch, Operand(Code::kHeaderSize - kHeapObjectTag));
-    Jump(scratch, cond);
-    return;
-  } else if (!isolate()->serializer_enabled()) {
-    int builtin_index = Builtins::kNoBuiltinId;
-    if (isolate()->builtins()->IsBuiltinHandle(code, &builtin_index) &&
-        Builtins::IsIsolateIndependent(builtin_index)) {
-      // Inline the trampoline.
-      CHECK_NE(builtin_index, Builtins::kNoBuiltinId);
+  if (FLAG_embedded_builtins) {
+    if (root_array_available_ && options().isolate_independent_code) {
       UseScratchRegisterScope temps(this);
       Register scratch = temps.AcquireX();
-      EmbeddedData d = EmbeddedData::FromBlob();
-      Address entry = d.InstructionStartOfBuiltin(builtin_index);
-      // RelocInfo is only necessary if generating code for the snapshot.
-      // Otherwise, the target address is immortal-immovable and never needs to
-      // be fixed up by GC (or deserialization).
-      Mov(scratch, Operand(entry, RelocInfo::NONE));
+      IndirectLoadConstant(scratch, code);
+      Add(scratch, scratch, Operand(Code::kHeaderSize - kHeapObjectTag));
       Jump(scratch, cond);
       return;
+    } else if (options().inline_offheap_trampolines) {
+      int builtin_index = Builtins::kNoBuiltinId;
+      if (isolate()->builtins()->IsBuiltinHandle(code, &builtin_index) &&
+          Builtins::IsIsolateIndependent(builtin_index)) {
+        // Inline the trampoline.
+        CHECK_NE(builtin_index, Builtins::kNoBuiltinId);
+        UseScratchRegisterScope temps(this);
+        Register scratch = temps.AcquireX();
+        EmbeddedData d = EmbeddedData::FromBlob();
+        Address entry = d.InstructionStartOfBuiltin(builtin_index);
+        Mov(scratch, Operand(entry, RelocInfo::OFF_HEAP_TARGET));
+        Jump(scratch, cond);
+        return;
+      }
     }
   }
-#endif  // V8_EMBEDDED_BUILTINS
   if (CanUseNearCallOrJump(rmode)) {
     JumpHelper(static_cast<int64_t>(GetCodeTargetIndex(code)), rmode, cond);
   } else {
@@ -2032,33 +2003,30 @@ void TurboAssembler::Call(Handle<Code> code, RelocInfo::Mode rmode) {
   Bind(&start_call);
 #endif
 
-#ifdef V8_EMBEDDED_BUILTINS
-  if (root_array_available_ && isolate()->ShouldLoadConstantsFromRootList()) {
-    UseScratchRegisterScope temps(this);
-    Register scratch = temps.AcquireX();
-    IndirectLoadConstant(scratch, code);
-    Add(scratch, scratch, Operand(Code::kHeaderSize - kHeapObjectTag));
-    Call(scratch);
-    return;
-  } else if (!isolate()->serializer_enabled()) {
-    int builtin_index = Builtins::kNoBuiltinId;
-    if (isolate()->builtins()->IsBuiltinHandle(code, &builtin_index) &&
-        Builtins::IsIsolateIndependent(builtin_index)) {
-      // Inline the trampoline.
-      CHECK_NE(builtin_index, Builtins::kNoBuiltinId);
+  if (FLAG_embedded_builtins) {
+    if (root_array_available_ && options().isolate_independent_code) {
       UseScratchRegisterScope temps(this);
       Register scratch = temps.AcquireX();
-      EmbeddedData d = EmbeddedData::FromBlob();
-      Address entry = d.InstructionStartOfBuiltin(builtin_index);
-      // RelocInfo is only necessary if generating code for the snapshot.
-      // Otherwise, the target address is immortal-immovable and never needs to
-      // be fixed up by GC (or deserialization).
-      Mov(scratch, Operand(entry, RelocInfo::NONE));
+      IndirectLoadConstant(scratch, code);
+      Add(scratch, scratch, Operand(Code::kHeaderSize - kHeapObjectTag));
       Call(scratch);
       return;
+    } else if (options().inline_offheap_trampolines) {
+      int builtin_index = Builtins::kNoBuiltinId;
+      if (isolate()->builtins()->IsBuiltinHandle(code, &builtin_index) &&
+          Builtins::IsIsolateIndependent(builtin_index)) {
+        // Inline the trampoline.
+        CHECK_NE(builtin_index, Builtins::kNoBuiltinId);
+        UseScratchRegisterScope temps(this);
+        Register scratch = temps.AcquireX();
+        EmbeddedData d = EmbeddedData::FromBlob();
+        Address entry = d.InstructionStartOfBuiltin(builtin_index);
+        Mov(scratch, Operand(entry, RelocInfo::OFF_HEAP_TARGET));
+        Call(scratch);
+        return;
+      }
     }
   }
-#endif  // V8_EMBEDDED_BUILTINS
   if (CanUseNearCallOrJump(rmode)) {
     near_call(GetCodeTargetIndex(code), rmode);
   } else {
@@ -2091,7 +2059,7 @@ bool TurboAssembler::IsNearCallOffset(int64_t offset) {
   return is_int26(offset);
 }
 
-void TurboAssembler::CallForDeoptimization(Address target,
+void TurboAssembler::CallForDeoptimization(Address target, int deopt_id,
                                            RelocInfo::Mode rmode) {
   DCHECK_EQ(rmode, RelocInfo::RUNTIME_ENTRY);
 
@@ -2100,22 +2068,20 @@ void TurboAssembler::CallForDeoptimization(Address target,
   Label start_call;
   Bind(&start_call);
 #endif
+  // The deoptimizer requires the deoptimization id to be in x16.
   UseScratchRegisterScope temps(this);
   Register temp = temps.AcquireX();
-
-  // Deoptimisation table entries require the call address to be in x16, in
-  // order to compute the entry id.
-  // TODO(all): Put the entry id back in the table now that we are using
-  // a direct branch for the call and do not need to set up x16.
   DCHECK(temp.Is(x16));
-  Mov(temp, Immediate(target, rmode));
-
+  // Make sure that the deopt id can be encoded in 16 bits, so can be encoded
+  // in a single movz instruction with a zero shift.
+  DCHECK(is_uint16(deopt_id));
+  movz(temp, deopt_id);
   int64_t offset = static_cast<int64_t>(target) -
-                   static_cast<int64_t>(isolate_data().code_range_start);
+                   static_cast<int64_t>(options().code_range_start);
   DCHECK_EQ(offset % kInstructionSize, 0);
   offset = offset / static_cast<int>(kInstructionSize);
   DCHECK(IsNearCallOffset(offset));
-  near_call(static_cast<int>(offset), rmode);
+  near_call(static_cast<int>(offset), RelocInfo::RUNTIME_ENTRY);
 
 #ifdef DEBUG
   AssertSizeOfCodeGeneratedSince(&start_call, kNearCallSize + kInstructionSize);

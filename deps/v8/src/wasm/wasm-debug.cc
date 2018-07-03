@@ -133,9 +133,9 @@ class InterpreterHandle {
   static Vector<const byte> GetBytes(WasmDebugInfo* debug_info) {
     // Return raw pointer into heap. The WasmInterpreter will make its own copy
     // of this data anyway, and there is no heap allocation in-between.
-    SeqOneByteString* bytes_str =
-        debug_info->wasm_instance()->module_object()->module_bytes();
-    return {bytes_str->GetChars(), static_cast<size_t>(bytes_str->length())};
+    NativeModule* native_module =
+        debug_info->wasm_instance()->module_object()->native_module();
+    return native_module->wire_bytes();
   }
 
  public:
@@ -560,8 +560,8 @@ Handle<FixedArray> GetOrCreateInterpretedFunctions(
   if (!obj->IsUndefined(isolate)) return Handle<FixedArray>::cast(obj);
 
   int num_functions = debug_info->wasm_instance()
-                          ->compiled_module()
-                          ->GetNativeModule()
+                          ->module_object()
+                          ->native_module()
                           ->num_functions();
   Handle<FixedArray> new_arr = isolate->factory()->NewFixedArray(num_functions);
   debug_info->set_interpreted_functions(*new_arr);
@@ -611,8 +611,8 @@ void WasmDebugInfo::RedirectToInterpreter(Handle<WasmDebugInfo> debug_info,
       GetOrCreateInterpretedFunctions(isolate, debug_info);
   Handle<WasmInstanceObject> instance(debug_info->wasm_instance(), isolate);
   wasm::NativeModule* native_module =
-      instance->compiled_module()->GetNativeModule();
-  wasm::WasmModule* module = instance->module();
+      instance->module_object()->native_module();
+  const wasm::WasmModule* module = instance->module();
 
   // We may modify js wrappers, as well as wasm functions. Hence the 2
   // modification scopes.
@@ -642,7 +642,8 @@ void WasmDebugInfo::PrepareStep(StepAction step_action) {
 bool WasmDebugInfo::RunInterpreter(Address frame_pointer, int func_index,
                                    Address arg_buffer) {
   DCHECK_LE(0, func_index);
-  Handle<WasmInstanceObject> instance(wasm_instance());
+  Handle<WasmInstanceObject> instance(wasm_instance(),
+                                      wasm_instance()->GetIsolate());
   return GetInterpreterHandle(this)->Execute(
       instance, frame_pointer, static_cast<uint32_t>(func_index), arg_buffer);
 }

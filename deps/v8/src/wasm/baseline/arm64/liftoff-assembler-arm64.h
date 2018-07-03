@@ -114,14 +114,14 @@ inline MemOperand GetMemOp(LiftoffAssembler* assm,
 
 }  // namespace liftoff
 
-uint32_t LiftoffAssembler::PrepareStackFrame() {
-  uint32_t offset = static_cast<uint32_t>(pc_offset());
+int LiftoffAssembler::PrepareStackFrame() {
+  int offset = pc_offset();
   InstructionAccurateScope scope(this, 1);
   sub(sp, sp, 0);
   return offset;
 }
 
-void LiftoffAssembler::PatchPrepareStackFrame(uint32_t offset,
+void LiftoffAssembler::PatchPrepareStackFrame(int offset,
                                               uint32_t stack_slots) {
   static_assert(kStackSlotSize == kXRegSize,
                 "kStackSlotSize must equal kXRegSize");
@@ -148,7 +148,7 @@ void LiftoffAssembler::PatchPrepareStackFrame(uint32_t offset,
     return;
   }
 #endif
-  PatchingAssembler patching_assembler(IsolateData(isolate()), buffer_ + offset,
+  PatchingAssembler patching_assembler(Assembler::Options{}, buffer_ + offset,
                                        1);
   patching_assembler.PatchSubSp(bytes);
 }
@@ -478,7 +478,7 @@ bool LiftoffAssembler::emit_i32_ctz(Register dst, Register src) {
 bool LiftoffAssembler::emit_i32_popcnt(Register dst, Register src) {
   UseScratchRegisterScope temps(this);
   VRegister scratch = temps.AcquireV(kFormat8B);
-  Fmov(scratch, src.X());
+  Fmov(scratch.S(), src.W());
   Cnt(scratch, scratch);
   Addv(scratch.B(), scratch);
   Fmov(dst.W(), scratch.S());
@@ -834,14 +834,9 @@ void LiftoffAssembler::emit_f64_set_cond(Condition cond, Register dst,
   }
 }
 
-void LiftoffAssembler::StackCheck(Label* ool_code) {
-  ExternalReference stack_limit =
-      ExternalReference::address_of_stack_limit(isolate());
-  UseScratchRegisterScope temps(this);
-  Register scratch = temps.AcquireX();
-  Mov(scratch, Operand(stack_limit));
-  Ldr(scratch, MemOperand(scratch));
-  Cmp(sp, scratch);
+void LiftoffAssembler::StackCheck(Label* ool_code, Register limit_address) {
+  Ldr(limit_address, MemOperand(limit_address));
+  Cmp(sp, limit_address);
   B(ool_code, ls);
 }
 

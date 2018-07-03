@@ -2350,8 +2350,6 @@ class InspectorClient : public v8_inspector::V8InspectorClient {
             .ToLocalChecked();
     CHECK(context->Global()->Set(context, function_name, function).FromJust());
 
-    v8::debug::SetLiveEditEnabled(isolate_, true);
-
     context_.Reset(isolate_, context);
   }
 
@@ -3077,6 +3075,21 @@ class Serializer : public ValueSerializer::Delegate {
     return Just<uint32_t>(static_cast<uint32_t>(index));
   }
 
+  Maybe<uint32_t> GetWasmModuleTransferId(
+      Isolate* isolate, Local<WasmCompiledModule> module) override {
+    DCHECK_NOT_NULL(data_);
+    for (size_t index = 0; index < wasm_modules_.size(); ++index) {
+      if (wasm_modules_[index] == module) {
+        return Just<uint32_t>(static_cast<uint32_t>(index));
+      }
+    }
+
+    size_t index = wasm_modules_.size();
+    wasm_modules_.emplace_back(isolate_, module);
+    data_->transferrable_modules_.push_back(module->GetTransferrableModule());
+    return Just<uint32_t>(static_cast<uint32_t>(index));
+  }
+
   void* ReallocateBufferMemory(void* old_buffer, size_t size,
                                size_t* actual_size) override {
     // Not accurate, because we don't take into account reallocated buffers,
@@ -3154,6 +3167,7 @@ class Serializer : public ValueSerializer::Delegate {
   std::unique_ptr<SerializationData> data_;
   std::vector<Global<ArrayBuffer>> array_buffers_;
   std::vector<Global<SharedArrayBuffer>> shared_array_buffers_;
+  std::vector<Global<WasmCompiledModule>> wasm_modules_;
   std::vector<ExternalizedContents> externalized_contents_;
   size_t current_memory_usage_;
 
@@ -3195,6 +3209,16 @@ class Deserializer : public ValueDeserializer::Delegate {
                                     contents.ByteLength());
     }
     return MaybeLocal<SharedArrayBuffer>();
+  }
+
+  MaybeLocal<WasmCompiledModule> GetWasmModuleFromId(
+      Isolate* isolate, uint32_t transfer_id) override {
+    DCHECK_NOT_NULL(data_);
+    if (transfer_id < data_->transferrable_modules().size()) {
+      return WasmCompiledModule::FromTransferrableModule(
+          isolate_, data_->transferrable_modules().at(transfer_id));
+    }
+    return MaybeLocal<WasmCompiledModule>();
   }
 
  private:

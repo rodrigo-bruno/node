@@ -66,7 +66,7 @@ void Assembler::emit_code_target(Handle<Code> target, RelocInfo::Mode rmode) {
 void Assembler::emit_runtime_entry(Address entry, RelocInfo::Mode rmode) {
   DCHECK(RelocInfo::IsRuntimeEntry(rmode));
   RecordRelocInfo(rmode);
-  emitl(static_cast<uint32_t>(entry - isolate_data().code_range_start));
+  emitl(static_cast<uint32_t>(entry - options().code_range_start));
 }
 
 void Assembler::emit(Immediate x) {
@@ -282,7 +282,7 @@ Handle<Code> Assembler::code_target_object_handle_at(Address pc) {
 }
 
 Address Assembler::runtime_entry_at(Address pc) {
-  return Memory::int32_at(pc) + isolate_data().code_range_start;
+  return Memory::int32_at(pc) + options().code_range_start;
 }
 
 // -----------------------------------------------------------------------------
@@ -336,15 +336,6 @@ Handle<HeapObject> RelocInfo::target_object_handle(Assembler* origin) {
     return Handle<HeapObject>::cast(Memory::Object_Handle_at(pc_));
   } else {
     return origin->code_target_object_handle_at(pc_);
-  }
-}
-
-void RelocInfo::set_wasm_code_table_entry(Address target,
-                                          ICacheFlushMode icache_flush_mode) {
-  DCHECK(rmode_ == RelocInfo::WASM_CODE_TABLE_ENTRY);
-  Memory::Address_at(pc_) = target;
-  if (icache_flush_mode != SKIP_ICACHE_FLUSH) {
-    Assembler::FlushICache(pc_, sizeof(Address));
   }
 }
 

@@ -198,23 +198,24 @@ bool Builtins::IsBuiltinHandle(Handle<HeapObject> maybe_code,
 }
 
 // static
-bool Builtins::IsEmbeddedBuiltin(const Code* code) {
-#ifdef V8_EMBEDDED_BUILTINS
-  return Builtins::IsBuiltinId(code->builtin_index()) &&
-         Builtins::IsIsolateIndependent(code->builtin_index());
-#else
-  return false;
-#endif
+bool Builtins::IsIsolateIndependentBuiltin(const Code* code) {
+  if (FLAG_embedded_builtins) {
+    const int builtin_index = code->builtin_index();
+    return Builtins::IsBuiltinId(builtin_index) &&
+           Builtins::IsIsolateIndependent(builtin_index);
+  } else {
+    return false;
+  }
 }
 
 // static
 bool Builtins::IsLazy(int index) {
   DCHECK(IsBuiltinId(index));
 
-#ifdef V8_EMBEDDED_BUILTINS
-  // We don't want to lazy-deserialize off-heap builtins.
-  if (Builtins::IsIsolateIndependent(index)) return false;
-#endif
+  if (FLAG_embedded_builtins) {
+    // We don't want to lazy-deserialize off-heap builtins.
+    if (Builtins::IsIsolateIndependent(index)) return false;
+  }
 
   // There are a couple of reasons that builtins can require eager-loading,
   // i.e. deserialization at isolate creation instead of on-demand. For
@@ -315,13 +316,20 @@ bool Builtins::IsIsolateIndependent(int index) {
     //    of the builtin itself (and not just the trampoline).
     case kInterpreterEntryTrampoline:
       return false;
+#if V8_TARGET_ARCH_MIPS64 || V8_TARGET_ARCH_MIPS
+    // TODO(7882): The size of ArraySpliceTorque on MIP64 and MIPS32 is greater
+    // than 128KB, and this triggers generation of MIPS specific trampolines.
+    // Trampoline code is not PIC and therefore the builtin is not isolate
+    // independent.
+    case kArraySpliceTorque:
+      return false;
+#endif
     default:
       return true;
   }
   UNREACHABLE();
 }
 
-#ifdef V8_EMBEDDED_BUILTINS
 // static
 Handle<Code> Builtins::GenerateOffHeapTrampolineFor(Isolate* isolate,
                                                     Address off_heap_entry) {
@@ -345,7 +353,6 @@ Handle<Code> Builtins::GenerateOffHeapTrampolineFor(Isolate* isolate,
 
   return isolate->factory()->NewCode(desc, Code::BUILTIN, masm.CodeObject());
 }
-#endif  // V8_EMBEDDED_BUILTINS
 
 // static
 Builtins::Kind Builtins::KindOf(int index) {

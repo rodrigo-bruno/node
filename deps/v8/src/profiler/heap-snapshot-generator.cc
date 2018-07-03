@@ -1199,12 +1199,10 @@ void V8HeapExplorer::ExtractSharedFunctionInfoReferences(
   SetInternalReference(obj, entry,
                        "function_data", shared->function_data(),
                        SharedFunctionInfo::kFunctionDataOffset);
-  SetInternalReference(obj, entry,
-                       "debug_info", shared->debug_info(),
-                       SharedFunctionInfo::kDebugInfoOffset);
-  SetInternalReference(obj, entry, "function_identifier",
-                       shared->function_identifier(),
-                       SharedFunctionInfo::kFunctionIdentifierOffset);
+  SetInternalReference(
+      obj, entry, "function_identifier_or_debug_info",
+      shared->function_identifier_or_debug_info(),
+      SharedFunctionInfo::kFunctionIdentifierOrDebugInfoOffset);
   SetInternalReference(
       obj, entry, "raw_outer_scope_info_or_feedback_metadata",
       shared->raw_outer_scope_info_or_feedback_metadata(),
@@ -1316,10 +1314,6 @@ void V8HeapExplorer::ExtractAllocationSiteReferences(int entry,
   TagObject(site->dependent_code(), "(dependent code)");
   SetInternalReference(site, entry, "dependent_code", site->dependent_code(),
                        AllocationSite::kDependentCodeOffset);
-  // Do not visit weak_next as it is not visited by the ObjectVisitor,
-  // and we're not very interested in weak_next field here.
-  STATIC_ASSERT(AllocationSite::kWeakNextOffset >=
-                AllocationSite::kPointerFieldsEndOffset);
 }
 
 class JSArrayBufferDataEntryAllocator : public HeapEntriesAllocator {
@@ -1904,7 +1898,8 @@ class GlobalObjectsEnumerator : public RootVisitor {
       if (!proxy->IsJSGlobalProxy()) continue;
       Object* global = proxy->map()->prototype();
       if (!global->IsJSGlobalObject()) continue;
-      objects_.push_back(Handle<JSGlobalObject>(JSGlobalObject::cast(global)));
+      objects_.push_back(Handle<JSGlobalObject>(JSGlobalObject::cast(global),
+                                                proxy->GetIsolate()));
     }
   }
   int count() const { return static_cast<int>(objects_.size()); }

@@ -81,7 +81,7 @@ NOT: '!';
 
 STRING_LITERAL : ('"' ( ESCAPE | ~('"' | '\\' | '\n' | '\r') ) * '"')
                | ('\'' ( ESCAPE | ~('\'' | '\\' | '\n' | '\r') ) * '\'');
-fragment ESCAPE : '\\' ( '\'' | '\\' | '"' );
+fragment ESCAPE : '\\' ( '\'' | '\\' | '"' | 'n' | 'r' );
 
 IDENTIFIER  :   [A-Za-z][0-9A-Za-z_]* ;
 
@@ -277,7 +277,7 @@ externalRuntime : EXTERN RUNTIME IDENTIFIER typeListMaybeVarArgs optionalType ';
 builtinDeclaration : JAVASCRIPT? BUILTIN IDENTIFIER optionalGenericTypeList parameterList optionalType (helperBody | ';');
 genericSpecialization: IDENTIFIER genericSpecializationTypeList parameterList optionalType optionalLabelList helperBody;
 macroDeclaration : ('operator' STRING_LITERAL)? MACRO IDENTIFIER optionalGenericTypeList parameterList optionalType optionalLabelList (helperBody | ';');
-constDeclaration : 'const' IDENTIFIER ':' type '=' STRING_LITERAL ';';
+externConstDeclaration : 'const' IDENTIFIER ':' type generatesDeclaration ';';
 
 declaration
         : typeDeclaration
@@ -288,7 +288,7 @@ declaration
         | externalMacro
         | externalBuiltin
         | externalRuntime
-        | constDeclaration;
+        | externConstDeclaration;
 
 moduleDeclaration : MODULE IDENTIFIER '{' declaration* '}';
 

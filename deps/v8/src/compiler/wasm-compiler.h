@@ -10,6 +10,7 @@
 // Clients of this interface shouldn't depend on lots of compiler internals.
 // Do not include anything from src/compiler here!
 #include "src/optimized-compilation-info.h"
+#include "src/runtime/runtime.h"
 #include "src/trap-handler/trap-handler.h"
 #include "src/wasm/function-body-decoder.h"
 #include "src/wasm/function-compiler.h"
@@ -51,13 +52,17 @@ namespace compiler {
 class WasmCompilationData {
  public:
   explicit WasmCompilationData(
-      wasm::RuntimeExceptionSupport runtime_exception_support);
+      wasm::RuntimeExceptionSupport runtime_exception_support)
+      : runtime_exception_support_(runtime_exception_support) {}
 
-  void AddProtectedInstruction(uint32_t instr_offset, uint32_t landing_offset);
+  void AddProtectedInstruction(uint32_t instr_offset, uint32_t landing_offset) {
+    protected_instructions_.push_back({instr_offset, landing_offset});
+  }
 
-  std::unique_ptr<std::vector<trap_handler::ProtectedInstructionData>>
-  ReleaseProtectedInstructions() {
-    return std::move(protected_instructions_);
+  OwnedVector<trap_handler::ProtectedInstructionData>
+  GetProtectedInstructions() {
+    return OwnedVector<trap_handler::ProtectedInstructionData>::Of(
+        protected_instructions_);
   }
 
   wasm::RuntimeExceptionSupport runtime_exception_support() const {
@@ -65,8 +70,7 @@ class WasmCompilationData {
   }
 
  private:
-  std::unique_ptr<std::vector<trap_handler::ProtectedInstructionData>>
-      protected_instructions_;
+  std::vector<trap_handler::ProtectedInstructionData> protected_instructions_;
 
   // See ModuleEnv::runtime_exception_support_.
   wasm::RuntimeExceptionSupport runtime_exception_support_;
@@ -112,7 +116,7 @@ MaybeHandle<Code> CompileWasmToJSWrapper(Isolate*, Handle<JSReceiver> target,
 
 // Wraps a given wasm code object, producing a code object.
 V8_EXPORT_PRIVATE MaybeHandle<Code> CompileJSToWasmWrapper(
-    Isolate*, wasm::WasmModule*, Address call_target, uint32_t index,
+    Isolate*, const wasm::WasmModule*, Address call_target, uint32_t index,
     wasm::UseTrapHandler);
 
 // Compiles a stub that redirects a call to a wasm function to the wasm
@@ -350,7 +354,7 @@ class WasmGraphBuilder {
   SetOncePointer<Node> globals_start_;
   SetOncePointer<Node> imported_mutable_globals_;
   SetOncePointer<Node> stack_check_code_node_;
-  const Operator* stack_check_call_operator_ = nullptr;
+  SetOncePointer<const Operator> stack_check_call_operator_;
 
   Node** cur_buffer_;
   size_t cur_bufsize_;

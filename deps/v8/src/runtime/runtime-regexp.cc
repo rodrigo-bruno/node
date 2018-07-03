@@ -799,7 +799,7 @@ Object* StringReplaceGlobalRegExpWithStringHelper(
     Handle<String> replacement, Handle<RegExpMatchInfo> last_match_info) {
   CHECK(regexp->GetFlags() & JSRegExp::kGlobal);
 
-  subject = String::Flatten(subject);
+  subject = String::Flatten(isolate, subject);
 
   if (replacement->length() == 0) {
     if (subject->HasOnlyOneByteChars()) {
@@ -811,7 +811,7 @@ Object* StringReplaceGlobalRegExpWithStringHelper(
     }
   }
 
-  replacement = String::Flatten(replacement);
+  replacement = String::Flatten(isolate, replacement);
 
   return StringReplaceGlobalRegExpWithString(isolate, subject, regexp,
                                              replacement, last_match_info);
@@ -850,8 +850,8 @@ RUNTIME_FUNCTION(Runtime_StringSplit) {
   // isn't empty, we can never create more parts than ~half the length
   // of the subject.
 
-  subject = String::Flatten(subject);
-  pattern = String::Flatten(pattern);
+  subject = String::Flatten(isolate, subject);
+  pattern = String::Flatten(isolate, pattern);
 
   std::vector<int>* indices = GetRewoundRegexpIndicesList(isolate);
 
@@ -872,7 +872,7 @@ RUNTIME_FUNCTION(Runtime_StringSplit) {
 
   DCHECK(result->HasObjectElements());
 
-  Handle<FixedArray> elements(FixedArray::cast(result->elements()));
+  Handle<FixedArray> elements(FixedArray::cast(result->elements()), isolate);
 
   if (part_count == 1 && indices->at(0) == subject_length) {
     elements->set(0, *subject);
@@ -938,7 +938,7 @@ class MatchInfoBackedMatch : public String::Match {
                        Handle<String> subject,
                        Handle<RegExpMatchInfo> match_info)
       : isolate_(isolate), match_info_(match_info) {
-    subject_ = String::Flatten(subject);
+    subject_ = String::Flatten(isolate, subject);
 
     if (regexp->TypeTag() == JSRegExp::IRREGEXP) {
       Object* o = regexp->CaptureNameMap();
@@ -1027,7 +1027,7 @@ class VectorBackedMatch : public String::Match {
         match_(match),
         match_position_(match_position),
         captures_(captures) {
-    subject_ = String::Flatten(subject);
+    subject_ = String::Flatten(isolate, subject);
 
     DCHECK(groups_obj->IsUndefined(isolate) || groups_obj->IsJSReceiver());
     has_named_captures_ = !groups_obj->IsUndefined(isolate);
@@ -1108,7 +1108,8 @@ Handle<JSObject> ConstructNamedCaptureGroupsObject(
     const int name_ix = i * 2;
     const int index_ix = i * 2 + 1;
 
-    Handle<String> capture_name(String::cast(capture_map->get(name_ix)));
+    Handle<String> capture_name(String::cast(capture_map->get(name_ix)),
+                                isolate);
     const int capture_ix = Smi::ToInt(capture_map->get(index_ix));
     DCHECK(1 <= capture_ix && capture_ix <= capture_count);
 
@@ -1167,8 +1168,8 @@ static Object* SearchRegExpMultiple(Isolate* isolate, Handle<String> subject,
 
   // Ensured in Runtime_RegExpExecMultiple.
   DCHECK(result_array->HasObjectElements());
-  Handle<FixedArray> result_elements(
-      FixedArray::cast(result_array->elements()));
+  Handle<FixedArray> result_elements(FixedArray::cast(result_array->elements()),
+                                     isolate);
   if (result_elements->length() < 16) {
     result_elements = isolate->factory()->NewFixedArrayWithHoles(16);
   }
@@ -1311,7 +1312,7 @@ V8_WARN_UNUSED_RESULT MaybeHandle<String> RegExpReplace(
   Handle<String> replace;
   ASSIGN_RETURN_ON_EXCEPTION(isolate, replace,
                              Object::ToString(isolate, replace_obj), String);
-  replace = String::Flatten(replace);
+  replace = String::Flatten(isolate, replace);
 
   Handle<RegExpMatchInfo> last_match_info = isolate->regexp_last_match_info();
 
@@ -1408,7 +1409,7 @@ RUNTIME_FUNCTION(Runtime_RegExpExecMultiple) {
   CONVERT_ARG_HANDLE_CHECKED(JSArray, result_array, 3);
   CHECK(result_array->HasObjectElements());
 
-  subject = String::Flatten(subject);
+  subject = String::Flatten(isolate, subject);
   CHECK(regexp->GetFlags() & JSRegExp::kGlobal);
 
   if (regexp->CaptureCount() == 0) {
@@ -1730,7 +1731,7 @@ RUNTIME_FUNCTION(Runtime_RegExpReplace) {
 
   Factory* factory = isolate->factory();
 
-  string = String::Flatten(string);
+  string = String::Flatten(isolate, string);
 
   // Fast-path for unmodified JSRegExps.
   if (RegExpUtils::IsUnmodifiedRegExp(isolate, recv)) {

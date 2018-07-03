@@ -21,7 +21,8 @@ namespace internal {
 
 void Builtins::Generate_Adaptor(MacroAssembler* masm, Address address,
                                 ExitFrameType exit_frame_type) {
-  __ LoadAddress(rbx, ExternalReference::Create(address));
+  __ LoadAddress(kJavaScriptCallExtraArg1Register,
+                 ExternalReference::Create(address));
   if (exit_frame_type == BUILTIN_EXIT) {
     __ Jump(BUILTIN_CODE(masm->isolate(), AdaptorWithBuiltinExitFrame),
             RelocInfo::CODE_TARGET);
@@ -30,64 +31,6 @@ void Builtins::Generate_Adaptor(MacroAssembler* masm, Address address,
     __ Jump(BUILTIN_CODE(masm->isolate(), AdaptorWithExitFrame),
             RelocInfo::CODE_TARGET);
   }
-}
-
-namespace {
-
-void AdaptorWithExitFrameType(MacroAssembler* masm,
-                              Builtins::ExitFrameType exit_frame_type) {
-  // ----------- S t a t e -------------
-  //  -- rax                 : number of arguments excluding receiver
-  //  -- rbx                 : entry point
-  //  -- rdi                 : target
-  //  -- rdx                 : new.target
-  //  -- rsp[0]              : return address
-  //  -- rsp[8]              : last argument
-  //  -- ...
-  //  -- rsp[8 * argc]       : first argument
-  //  -- rsp[8 * (argc + 1)] : receiver
-  // -----------------------------------
-  __ AssertFunction(rdi);
-
-  // The logic contained here is mirrored for TurboFan inlining in
-  // JSTypedLowering::ReduceJSCall{Function,Construct}. Keep these in sync.
-
-  // Make sure we operate in the context of the called function (for example
-  // ConstructStubs implemented in C++ will be run in the context of the caller
-  // instead of the callee, due to the way that [[Construct]] is defined for
-  // ordinary functions).
-  __ movp(rsi, FieldOperand(rdi, JSFunction::kContextOffset));
-
-  // CEntry expects rax to contain the number of arguments including the
-  // receiver and the extra arguments.
-  __ addp(rax, Immediate(BuiltinExitFrameConstants::kNumExtraArgsWithReceiver));
-
-  // Unconditionally insert argc, target and new target as extra arguments. They
-  // will be used by stack frame iterators when constructing the stack trace.
-  __ PopReturnAddressTo(kScratchRegister);
-  __ SmiTag(rax, rax);
-  __ PushRoot(Heap::kTheHoleValueRootIndex);  // Padding.
-  __ Push(rax);
-  __ SmiUntag(rax, rax);
-  __ Push(rdi);
-  __ Push(rdx);
-  __ PushReturnAddressFrom(kScratchRegister);
-
-  // Jump to the C entry runtime stub directly here instead of using
-  // JumpToExternalReference because rbx is loaded by Generate_adaptor.
-  Handle<Code> code =
-      CodeFactory::CEntry(masm->isolate(), 1, kDontSaveFPRegs, kArgvOnStack,
-                          exit_frame_type == Builtins::BUILTIN_EXIT);
-  __ Jump(code, RelocInfo::CODE_TARGET);
-}
-}  // namespace
-
-void Builtins::Generate_AdaptorWithExitFrame(MacroAssembler* masm) {
-  AdaptorWithExitFrameType(masm, EXIT);
-}
-
-void Builtins::Generate_AdaptorWithBuiltinExitFrame(MacroAssembler* masm) {
-  AdaptorWithExitFrameType(masm, BUILTIN_EXIT);
 }
 
 static void GenerateTailCallToReturnedCode(MacroAssembler* masm,
@@ -914,17 +857,13 @@ void Builtins::Generate_InterpreterEntryTrampoline(MacroAssembler* masm) {
   __ Push(rsi);  // Callee's context.
   __ Push(rdi);  // Callee's JS function.
 
-  // Get the bytecode array from the function object (or from the DebugInfo if
-  // it is present) and load it into kInterpreterBytecodeArrayRegister.
-  Label maybe_load_debug_bytecode_array, bytecode_array_loaded;
+  // Get the bytecode array from the function object and load it into
+  // kInterpreterBytecodeArrayRegister.
   __ movp(rax, FieldOperand(closure, JSFunction::kSharedFunctionInfoOffset));
   __ movp(kInterpreterBytecodeArrayRegister,
           FieldOperand(rax, SharedFunctionInfo::kFunctionDataOffset));
   GetSharedFunctionInfoBytecode(masm, kInterpreterBytecodeArrayRegister,
                                 kScratchRegister);
-  __ JumpIfNotSmi(FieldOperand(rax, SharedFunctionInfo::kDebugInfoOffset),
-                  &maybe_load_debug_bytecode_array);
-  __ bind(&bytecode_array_loaded);
 
   // Increment invocation count for the function.
   __ incl(
@@ -1037,39 +976,6 @@ void Builtins::Generate_InterpreterEntryTrampoline(MacroAssembler* masm) {
   // The return value is in rax.
   LeaveInterpreterFrame(masm, rbx, rcx);
   __ ret(0);
-
-  // Load debug copy of the bytecode array if it exists.
-  // kInterpreterBytecodeArrayRegister is already loaded with
-  // SharedFunctionInfo::kFunctionDataOffset.
-  __ bind(&maybe_load_debug_bytecode_array);
-  __ movp(rax, FieldOperand(closure, JSFunction::kSharedFunctionInfoOffset));
-  __ movp(rcx, FieldOperand(rax, SharedFunctionInfo::kDebugInfoOffset));
-  __ movp(kScratchRegister,
-          FieldOperand(rcx, DebugInfo::kDebugBytecodeArrayOffset));
-  __ JumpIfRoot(kScratchRegister, Heap::kUndefinedValueRootIndex,
-                &bytecode_array_loaded);
-
-  __ movp(kInterpreterBytecodeArrayRegister, kScratchRegister);
-  __ SmiUntag(rax, FieldOperand(rcx, DebugInfo::kFlagsOffset));
-  __ andb(rax, Immediate(DebugInfo::kDebugExecutionMode));
-  STATIC_ASSERT(static_cast<int>(DebugInfo::kDebugExecutionMode) ==
-                static_cast<int>(DebugInfo::kSideEffects));
-  ExternalReference debug_execution_mode_address =
-      ExternalReference::debug_execution_mode_address(masm->isolate());
-  Operand debug_execution_mode =
-      masm->ExternalOperand(debug_execution_mode_address);
-  __ cmpb(rax, debug_execution_mode);
-  __ j(equal, &bytecode_array_loaded);
-
-  __ Push(closure);
-  __ Push(feedback_vector);
-  __ Push(kInterpreterBytecodeArrayRegister);
-  __ Push(closure);
-  __ CallRuntime(Runtime::kDebugApplyInstrumentation);
-  __ Pop(kInterpreterBytecodeArrayRegister);
-  __ Pop(feedback_vector);
-  __ Pop(closure);
-  __ jmp(&bytecode_array_loaded);
 }
 
 static void Generate_InterpreterPushArgs(MacroAssembler* masm,
@@ -1732,19 +1638,6 @@ static void LeaveArgumentsAdaptorFrame(MacroAssembler* masm) {
   __ PushReturnAddressFrom(rcx);
 }
 
-// static
-void Builtins::Generate_Abort(MacroAssembler* masm) {
-  // ----------- S t a t e -------------
-  //  -- rdx    : message_id as Smi
-  //  -- rsp[0] : return address
-  // -----------------------------------
-  __ PopReturnAddressTo(rcx);
-  __ Push(rdx);
-  __ PushReturnAddressFrom(rcx);
-  __ Move(rsi, Smi::kZero);
-  __ TailCallRuntime(Runtime::kAbort);
-}
-
 void Builtins::Generate_ArgumentsAdaptorTrampoline(MacroAssembler* masm) {
   // ----------- S t a t e -------------
   //  -- rax : actual number of arguments
@@ -1863,7 +1756,24 @@ void Builtins::Generate_CallOrConstructVarargs(MacroAssembler* masm,
   //  -- rdx    : new.target (for [[Construct]])
   //  -- rsp[0] : return address
   // -----------------------------------
-  __ AssertFixedArray(rbx);
+  if (masm->emit_debug_code()) {
+    // Allow rbx to be a FixedArray, or a FixedDoubleArray if rcx == 0.
+    Label ok, fail;
+    __ AssertNotSmi(rbx);
+    Register map = r9;
+    __ movp(map, FieldOperand(rbx, HeapObject::kMapOffset));
+    __ CmpInstanceType(map, FIXED_ARRAY_TYPE);
+    __ j(equal, &ok);
+    __ CmpInstanceType(map, FIXED_DOUBLE_ARRAY_TYPE);
+    __ j(not_equal, &fail);
+    __ cmpl(rcx, Immediate(0));
+    __ j(equal, &ok);
+    // Fall through.
+    __ bind(&fail);
+    __ Abort(AbortReason::kOperandIsNotAFixedArray);
+
+    __ bind(&ok);
+  }
 
   // Check for stack overflow.
   {

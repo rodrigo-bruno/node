@@ -149,6 +149,49 @@ class JSFunction::BodyDescriptor final : public BodyDescriptorBase {
   }
 };
 
+template <bool includeWeakNext>
+class AllocationSite::BodyDescriptorImpl final : public BodyDescriptorBase {
+ public:
+  STATIC_ASSERT(AllocationSite::kCommonPointerFieldEndOffset ==
+                AllocationSite::kPretenureDataOffset);
+  STATIC_ASSERT(AllocationSite::kPretenureDataOffset + kInt32Size ==
+                AllocationSite::kPretenureCreateCountOffset);
+  STATIC_ASSERT(AllocationSite::kPretenureCreateCountOffset + kInt32Size ==
+                AllocationSite::kWeakNextOffset);
+
+  static bool IsValidSlot(Map* map, HeapObject* obj, int offset) {
+    if (offset >= AllocationSite::kStartOffset &&
+        offset < AllocationSite::kCommonPointerFieldEndOffset) {
+      return true;
+    }
+    // check for weak_next offset
+    if (includeWeakNext &&
+        map->instance_size() == AllocationSite::kSizeWithWeakNext &&
+        offset == AllocationSite::kWeakNextOffset) {
+      return true;
+    }
+    return false;
+  }
+
+  template <typename ObjectVisitor>
+  static inline void IterateBody(Map* map, HeapObject* obj, int object_size,
+                                 ObjectVisitor* v) {
+    // Iterate over all the common pointer fields
+    IteratePointers(obj, AllocationSite::kStartOffset,
+                    AllocationSite::kCommonPointerFieldEndOffset, v);
+    // Skip PretenureDataOffset and PretenureCreateCount which are Int32 fields
+    // Visit weak_next only for full body descriptor and if it has weak_next
+    // field
+    if (includeWeakNext && object_size == AllocationSite::kSizeWithWeakNext)
+      IteratePointers(obj, AllocationSite::kWeakNextOffset,
+                      AllocationSite::kSizeWithWeakNext, v);
+  }
+
+  static inline int SizeOf(Map* map, HeapObject* object) {
+    return map->instance_size();
+  }
+};
+
 class JSArrayBuffer::BodyDescriptor final : public BodyDescriptorBase {
  public:
   STATIC_ASSERT(kByteLengthOffset + kPointerSize == kBackingStoreOffset);
@@ -192,7 +235,7 @@ class SmallOrderedHashTable<Derived>::BodyDescriptor final
                                  ObjectVisitor* v) {
     Derived* table = reinterpret_cast<Derived*>(obj);
 
-    int offset = kHeaderSize + kDataTableStartOffset;
+    int offset = kDataTableStartOffset;
     int entry = 0;
     for (int i = 0; i < table->Capacity(); i++) {
       for (int j = 0; j < Derived::kEntrySize; j++) {
@@ -505,7 +548,7 @@ class WasmInstanceObject::BodyDescriptor final : public BodyDescriptorBase {
  public:
   static bool IsValidSlot(Map* map, HeapObject* obj, int offset) {
     if (offset < kMemoryStartOffset) return true;
-    if (offset < kCompiledModuleOffset) return false;
+    if (offset < kModuleObjectOffset) return false;
     return IsValidSlotImpl(map, obj, offset);
   }
 
@@ -595,8 +638,16 @@ ReturnType BodyDescriptorApply(InstanceType type, T1 p1, T2 p2, T3 p3, T4 p4) {
     case FIXED_ARRAY_TYPE:
     case BOILERPLATE_DESCRIPTION_TYPE:
     case HASH_TABLE_TYPE:
+    case ORDERED_HASH_MAP_TYPE:
+    case ORDERED_HASH_SET_TYPE:
+    case NAME_DICTIONARY_TYPE:
+    case GLOBAL_DICTIONARY_TYPE:
+    case NUMBER_DICTIONARY_TYPE:
+    case SIMPLE_NUMBER_DICTIONARY_TYPE:
+    case STRING_TABLE_TYPE:
     case EPHEMERON_HASH_TABLE_TYPE:
     case SCOPE_INFO_TYPE:
+    case SCRIPT_CONTEXT_TABLE_TYPE:
     case BLOCK_CONTEXT_TYPE:
     case CATCH_CONTEXT_TYPE:
     case DEBUG_EVALUATE_CONTEXT_TYPE:

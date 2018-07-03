@@ -44,7 +44,8 @@ MaybeHandle<Object> DebugEvaluate::Global(Isolate* isolate,
                                                             context);
   if (throw_on_side_effect) isolate->debug()->StartSideEffectCheckMode();
   MaybeHandle<Object> result = Execution::Call(
-      isolate, fun, Handle<JSObject>(context->global_proxy()), 0, nullptr);
+      isolate, fun, Handle<JSObject>(context->global_proxy(), isolate), 0,
+      nullptr);
   if (throw_on_side_effect) isolate->debug()->StopSideEffectCheckMode();
   return result;
 }
@@ -72,7 +73,7 @@ MaybeHandle<Object> DebugEvaluate::Local(Isolate* isolate,
   if (isolate->has_pending_exception()) return MaybeHandle<Object>();
 
   Handle<Context> context = context_builder.evaluation_context();
-  Handle<JSObject> receiver(context->global_proxy());
+  Handle<JSObject> receiver(context->global_proxy(), isolate);
   MaybeHandle<Object> maybe_result =
       Evaluate(isolate, context_builder.outer_info(), context, receiver, source,
                throw_on_side_effect);
@@ -115,7 +116,7 @@ MaybeHandle<Object> DebugEvaluate::WithTopmostArguments(Isolate* isolate,
                                        Handle<Context>(), Handle<StringSet>());
   Handle<SharedFunctionInfo> outer_info(
       native_context->empty_function()->shared(), isolate);
-  Handle<JSObject> receiver(native_context->global_proxy());
+  Handle<JSObject> receiver(native_context->global_proxy(), isolate);
   const bool throw_on_side_effect = false;
   MaybeHandle<Object> maybe_result =
       Evaluate(isolate, outer_info, evaluation_context, receiver, source,
@@ -170,7 +171,8 @@ DebugEvaluate::ContextBuilder::ContextBuilder(Isolate* isolate,
       frame_inspector_(frame, inlined_jsframe_index, isolate),
       scope_iterator_(isolate, &frame_inspector_,
                       ScopeIterator::COLLECT_NON_LOCALS) {
-  Handle<Context> outer_context(frame_inspector_.GetFunction()->context());
+  Handle<Context> outer_context(frame_inspector_.GetFunction()->context(),
+                                isolate);
   evaluation_context_ = outer_context;
   Factory* factory = isolate->factory();
 
@@ -329,6 +331,8 @@ bool IntrinsicHasNoSideEffect(Runtime::FunctionId id) {
   V(ObjectHasOwnProperty)                \
   V(ObjectValues)                        \
   V(ObjectValuesSkipFastPath)            \
+  V(ObjectGetOwnPropertyNames)           \
+  V(ObjectGetOwnPropertyNamesTryFast)    \
   V(RegExpInitializeAndCompile)          \
   V(StackGuard)                          \
   V(StringAdd)                           \
@@ -520,8 +524,7 @@ bool BytecodeHasNoSideEffect(interpreter::Bytecode bytecode) {
   }
 }
 
-SharedFunctionInfo::SideEffectState BuiltinGetSideEffectState(
-    Builtins::Name id) {
+DebugInfo::SideEffectState BuiltinGetSideEffectState(Builtins::Name id) {
   switch (id) {
     // Whitelist for builtins.
     // Object builtins.
@@ -798,7 +801,7 @@ SharedFunctionInfo::SideEffectState BuiltinGetSideEffectState(
     case Builtins::kMakeURIError:
     // RegExp builtins.
     case Builtins::kRegExpConstructor:
-      return SharedFunctionInfo::kHasNoSideEffect;
+      return DebugInfo::kHasNoSideEffect;
     // Set builtins.
     case Builtins::kSetIteratorPrototypeNext:
     case Builtins::kSetPrototypeAdd:
@@ -827,13 +830,13 @@ SharedFunctionInfo::SideEffectState BuiltinGetSideEffectState(
     case Builtins::kRegExpPrototypeDotAllGetter:
     case Builtins::kRegExpPrototypeUnicodeGetter:
     case Builtins::kRegExpPrototypeStickyGetter:
-      return SharedFunctionInfo::kRequiresRuntimeChecks;
+      return DebugInfo::kRequiresRuntimeChecks;
     default:
       if (FLAG_trace_side_effect_free_debug_evaluate) {
         PrintF("[debug-evaluate] built-in %s may cause side effect.\n",
                Builtins::name(id));
       }
-      return SharedFunctionInfo::kHasSideEffects;
+      return DebugInfo::kHasSideEffects;
   }
 }
 
@@ -855,8 +858,8 @@ bool BytecodeRequiresRuntimeCheck(interpreter::Bytecode bytecode) {
 }  // anonymous namespace
 
 // static
-SharedFunctionInfo::SideEffectState DebugEvaluate::FunctionGetSideEffectState(
-    Handle<SharedFunctionInfo> info) {
+DebugInfo::SideEffectState DebugEvaluate::FunctionGetSideEffectState(
+    Isolate* isolate, Handle<SharedFunctionInfo> info) {
   if (FLAG_trace_side_effect_free_debug_evaluate) {
     PrintF("[debug-evaluate] Checking function %s for side effect.\n",
            info->DebugName()->ToCString().get());
@@ -865,8 +868,10 @@ SharedFunctionInfo::SideEffectState DebugEvaluate::FunctionGetSideEffectState(
   DCHECK(info->is_compiled());
   if (info->HasBytecodeArray()) {
     // Check bytecodes against whitelist.
-    Handle<BytecodeArray> bytecode_array(info->GetBytecodeArray());
-    if (FLAG_trace_side_effect_free_debug_evaluate) bytecode_array->Print();
+    Handle<BytecodeArray> bytecode_array(info->GetBytecodeArray(), isolate);
+    if (FLAG_trace_side_effect_free_debug_evaluate) {
+      bytecode_array->Print(isolate);
+    }
     bool requires_runtime_checks = false;
     for (interpreter::BytecodeArrayIterator it(bytecode_array); !it.done();
          it.Advance()) {
@@ -878,7 +883,7 @@ SharedFunctionInfo::SideEffectState DebugEvaluate::FunctionGetSideEffectState(
                 ? it.GetIntrinsicIdOperand(0)
                 : it.GetRuntimeIdOperand(0);
         if (IntrinsicHasNoSideEffect(id)) continue;
-        return SharedFunctionInfo::kHasSideEffects;
+        return DebugInfo::kHasSideEffects;
       }
 
       if (BytecodeHasNoSideEffect(bytecode)) continue;
@@ -893,15 +898,15 @@ SharedFunctionInfo::SideEffectState DebugEvaluate::FunctionGetSideEffectState(
       }
 
       // Did not match whitelist.
-      return SharedFunctionInfo::kHasSideEffects;
+      return DebugInfo::kHasSideEffects;
     }
-    return requires_runtime_checks ? SharedFunctionInfo::kRequiresRuntimeChecks
-                                   : SharedFunctionInfo::kHasNoSideEffect;
+    return requires_runtime_checks ? DebugInfo::kRequiresRuntimeChecks
+                                   : DebugInfo::kHasNoSideEffect;
   } else if (info->IsApiFunction()) {
     if (info->GetCode()->is_builtin()) {
       return info->GetCode()->builtin_index() == Builtins::kHandleApiCall
-                 ? SharedFunctionInfo::kHasNoSideEffect
-                 : SharedFunctionInfo::kHasSideEffects;
+                 ? DebugInfo::kHasNoSideEffect
+                 : DebugInfo::kHasSideEffects;
     }
   } else {
     // Check built-ins against whitelist.
@@ -909,12 +914,11 @@ SharedFunctionInfo::SideEffectState DebugEvaluate::FunctionGetSideEffectState(
         info->HasBuiltinId() ? info->builtin_id() : Builtins::kNoBuiltinId;
     DCHECK_NE(Builtins::kDeserializeLazy, builtin_index);
     if (!Builtins::IsBuiltinId(builtin_index))
-      return SharedFunctionInfo::kHasSideEffects;
-    SharedFunctionInfo::SideEffectState state =
+      return DebugInfo::kHasSideEffects;
+    DebugInfo::SideEffectState state =
         BuiltinGetSideEffectState(static_cast<Builtins::Name>(builtin_index));
 #ifdef DEBUG
-    if (state == SharedFunctionInfo::kHasNoSideEffect) {
-      Isolate* isolate = info->GetIsolate();
+    if (state == DebugInfo::kHasNoSideEffect) {
       Code* code = isolate->builtins()->builtin(builtin_index);
       if (code->builtin_index() == Builtins::kDeserializeLazy) {
         // Target builtin is not yet deserialized. Deserialize it now.
@@ -947,11 +951,12 @@ SharedFunctionInfo::SideEffectState DebugEvaluate::FunctionGetSideEffectState(
     return state;
   }
 
-  return SharedFunctionInfo::kHasSideEffects;
+  return DebugInfo::kHasSideEffects;
 }
 
 // static
-bool DebugEvaluate::CallbackHasNoSideEffect(Object* callback_info) {
+bool DebugEvaluate::CallbackHasNoSideEffect(Isolate* isolate,
+                                            Object* callback_info) {
   DisallowHeapAllocation no_gc;
   if (callback_info->IsAccessorInfo()) {
     // List of whitelisted internal accessors can be found in accessors.h.
@@ -970,7 +975,7 @@ bool DebugEvaluate::CallbackHasNoSideEffect(Object* callback_info) {
     }
   } else if (callback_info->IsCallHandlerInfo()) {
     CallHandlerInfo* info = CallHandlerInfo::cast(callback_info);
-    if (info->IsSideEffectFreeCallHandlerInfo()) return true;
+    if (info->IsSideEffectFreeCallHandlerInfo(isolate)) return true;
     if (FLAG_trace_side_effect_free_debug_evaluate) {
       PrintF("[debug-evaluate] API CallHandlerInfo may cause side effect.\n");
     }

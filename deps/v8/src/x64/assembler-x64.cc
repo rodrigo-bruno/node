@@ -19,6 +19,7 @@
 #include "src/base/bits.h"
 #include "src/base/cpu.h"
 #include "src/code-stubs.h"
+#include "src/deoptimizer.h"
 #include "src/macro-assembler.h"
 #include "src/v8.h"
 
@@ -137,8 +138,8 @@ Address RelocInfo::js_to_wasm_address() const {
   return Memory::Address_at(pc_);
 }
 
-uint32_t RelocInfo::wasm_stub_call_tag() const {
-  DCHECK_EQ(rmode_, WASM_STUB_CALL);
+uint32_t RelocInfo::wasm_call_tag() const {
+  DCHECK(rmode_ == WASM_CALL || rmode_ == WASM_STUB_CALL);
   return Memory::uint32_at(pc_);
 }
 
@@ -338,8 +339,8 @@ void Assembler::AllocateAndInstallRequestedHeapObjects(Isolate* isolate) {
     Address pc = reinterpret_cast<Address>(buffer_) + request.offset();
     switch (request.kind()) {
       case HeapObjectRequest::kHeapNumber: {
-        Handle<HeapNumber> object = isolate->factory()->NewHeapNumber(
-            request.heap_number(), IMMUTABLE, TENURED);
+        Handle<HeapNumber> object =
+            isolate->factory()->NewHeapNumber(request.heap_number(), TENURED);
         Memory::Object_Handle_at(pc) = object;
         break;
       }
@@ -355,8 +356,8 @@ void Assembler::AllocateAndInstallRequestedHeapObjects(Isolate* isolate) {
 // -----------------------------------------------------------------------------
 // Implementation of Assembler.
 
-Assembler::Assembler(IsolateData isolate_data, void* buffer, int buffer_size)
-    : AssemblerBase(isolate_data, buffer, buffer_size) {
+Assembler::Assembler(const Options& options, void* buffer, int buffer_size)
+    : AssemblerBase(options, buffer, buffer_size) {
 // Clear the buffer in debug mode unless it was provided by the
 // caller in which case we can't be sure it's okay to overwrite
 // existing code in it.
@@ -4830,9 +4831,8 @@ void Assembler::dq(Label* label) {
 
 void Assembler::RecordRelocInfo(RelocInfo::Mode rmode, intptr_t data) {
   DCHECK(!RelocInfo::IsNone(rmode));
-  // Don't record external references unless the heap will be serialized.
-  if (rmode == RelocInfo::EXTERNAL_REFERENCE &&
-      !serializer_enabled() && !emit_debug_code()) {
+  if (RelocInfo::IsOnlyForSerializer(rmode) &&
+      !options().record_reloc_info_for_serialization && !emit_debug_code()) {
     return;
   }
   RelocInfo rinfo(reinterpret_cast<Address>(pc_), rmode, data, nullptr);
@@ -4857,6 +4857,10 @@ bool RelocInfo::IsInConstantPool() {
   return false;
 }
 
+int RelocInfo::GetDeoptimizationId(Isolate* isolate, DeoptimizeKind kind) {
+  DCHECK(IsRuntimeEntry(rmode_));
+  return Deoptimizer::GetDeoptimizationId(isolate, target_address(), kind);
+}
 
 }  // namespace internal
 }  // namespace v8

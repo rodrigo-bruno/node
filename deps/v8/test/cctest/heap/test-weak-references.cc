@@ -17,6 +17,7 @@ namespace heap {
 Handle<FeedbackVector> CreateFeedbackVectorForTest(
     v8::Isolate* isolate, Factory* factory,
     PretenureFlag pretenure_flag = NOT_TENURED) {
+  i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(isolate);
   v8::Local<v8::Script> script =
       v8::Script::Compile(isolate->GetCurrentContext(),
                           v8::String::NewFromUtf8(isolate, "function foo() {}",
@@ -25,7 +26,7 @@ Handle<FeedbackVector> CreateFeedbackVectorForTest(
           .ToLocalChecked();
   Handle<Object> obj = v8::Utils::OpenHandle(*script);
   Handle<SharedFunctionInfo> shared_function =
-      Handle<SharedFunctionInfo>(JSFunction::cast(*obj)->shared());
+      Handle<SharedFunctionInfo>(JSFunction::cast(*obj)->shared(), i_isolate);
   Handle<FeedbackVector> fv =
       factory->NewFeedbackVector(shared_function, pretenure_flag);
   return fv;
@@ -52,7 +53,7 @@ TEST(WeakReferencesBasic) {
     HandleScope inner_scope(isolate);
 
     // Create a new Code.
-    Assembler assm(isolate, nullptr, 0);
+    Assembler assm(Assembler::Options{}, nullptr, 0);
     assm.nop();  // supported on all architectures
     CodeDesc desc;
     assm.GetCode(isolate, &desc);
@@ -434,7 +435,7 @@ TEST(WeakArrayListBasic) {
   Heap* heap = isolate->heap();
   HandleScope outer_scope(isolate);
 
-  Handle<WeakArrayList> array(heap->empty_weak_array_list());
+  Handle<WeakArrayList> array(heap->empty_weak_array_list(), isolate);
   CHECK(array->IsWeakArrayList());
   CHECK(!array->IsFixedArray());
   CHECK(!array->IsWeakFixedArray());

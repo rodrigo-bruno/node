@@ -99,7 +99,6 @@ using ::v8::Value;
   }                                                                  \
   THREADED_TEST(Name)
 
-
 void RunWithProfiler(void (*test)()) {
   LocalContext env;
   v8::HandleScope scope(env->GetIsolate());
@@ -2742,6 +2741,7 @@ THREADED_TEST(InternalFields) {
 TEST(InternalFieldsSubclassing) {
   LocalContext env;
   v8::Isolate* isolate = env->GetIsolate();
+  i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(isolate);
   v8::HandleScope scope(isolate);
   for (int nof_embedder_fields = 0;
        nof_embedder_fields < i::JSObject::kMaxEmbedderFields;
@@ -2819,9 +2819,9 @@ TEST(InternalFieldsSubclassing) {
       i::Handle<i::JSObject> i_value =
           i::Handle<i::JSObject>::cast(v8::Utils::OpenHandle(*value));
 #ifdef VERIFY_HEAP
-      i_value->HeapObjectVerify();
-      i_value->map()->HeapObjectVerify();
-      i_value->map()->FindRootMap()->HeapObjectVerify();
+      i_value->HeapObjectVerify(i_isolate);
+      i_value->map()->HeapObjectVerify(i_isolate);
+      i_value->map()->FindRootMap(i_isolate)->HeapObjectVerify(i_isolate);
 #endif
       CHECK_EQ(nof_embedder_fields, value->InternalFieldCount());
       if (in_object_only) {
@@ -2831,7 +2831,8 @@ TEST(InternalFieldsSubclassing) {
       }
 
       // Make Sure we get the precise property count.
-      i_value->map()->FindRootMap()->CompleteInobjectSlackTracking();
+      i_value->map()->FindRootMap(i_isolate)->CompleteInobjectSlackTracking(
+          i_isolate);
       // TODO(cbruni): fix accounting to make this condition true.
       // CHECK_EQ(0, i_value->map()->UnusedPropertyFields());
       if (in_object_only) {
@@ -8269,12 +8270,12 @@ static int StrNCmp16(uint16_t* a, uint16_t* b, int n) {
   }
 }
 
-
-int GetUtf8Length(Local<String> str) {
+int GetUtf8Length(v8::Isolate* isolate, Local<String> str) {
   int len = str->Utf8Length();
   if (len < 0) {
+    i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(isolate);
     i::Handle<i::String> istr(v8::Utils::OpenHandle(*str));
-    i::String::Flatten(istr);
+    i::String::Flatten(i_isolate, istr);
     len = str->Utf8Length();
   }
   return len;
@@ -8440,7 +8441,7 @@ THREADED_TEST(StringWrite) {
   CHECK_EQ(0, charlen);
 
   memset(utf8buf, 0x1, sizeof(utf8buf));
-  len = GetUtf8Length(left_tree);
+  len = GetUtf8Length(context->GetIsolate(), left_tree);
   int utf8_expected =
       (0x80 + (0x800 - 0x80) * 2 + (0xD800 - 0x800) * 3) / kStride;
   CHECK_EQ(utf8_expected, len);
@@ -8454,7 +8455,7 @@ THREADED_TEST(StringWrite) {
   CHECK_EQ(1, utf8buf[utf8_expected]);
 
   memset(utf8buf, 0x1, sizeof(utf8buf));
-  len = GetUtf8Length(right_tree);
+  len = GetUtf8Length(context->GetIsolate(), right_tree);
   CHECK_EQ(utf8_expected, len);
   len = right_tree->WriteUtf8(utf8buf, utf8_expected, &charlen);
   CHECK_EQ(utf8_expected, len);
@@ -8619,7 +8620,7 @@ static void Utf16Helper(
         Local<v8::String>::Cast(a->Get(context.local(), i).ToLocalChecked());
     Local<v8::Number> expected_len = Local<v8::Number>::Cast(
         alens->Get(context.local(), i).ToLocalChecked());
-    int length = GetUtf8Length(string);
+    int length = GetUtf8Length(context->GetIsolate(), string);
     CHECK_EQ(static_cast<int>(expected_len->Value()), length);
   }
 }
@@ -13404,7 +13405,7 @@ TEST(CallHandlerAsFunctionHasNoSideEffectNotSupported) {
   i::Heap* heap = reinterpret_cast<i::Isolate*>(isolate)->heap();
   i::CallHandlerInfo* handler_info =
       i::CallHandlerInfo::cast(cons->instance_call_handler());
-  CHECK(!handler_info->IsSideEffectFreeCallHandlerInfo());
+  CHECK(!handler_info->IsSideEffectFreeCallHandlerInfo(CcTest::i_isolate()));
   handler_info->set_map(heap->side_effect_free_call_handler_info_map());
   CHECK(v8::debug::EvaluateGlobal(isolate, v8_str("obj()"), true).IsEmpty());
 }
@@ -16680,8 +16681,9 @@ static void ObjectWithExternalArrayTestHelper(Local<Context> context,
     CHECK(result->BooleanValue(context).FromJust());
   }
 
-  i::Handle<ExternalArrayClass> array(ExternalArrayClass::cast(
-      i::Handle<i::JSObject>::cast(jsobj)->elements()));
+  i::Handle<ExternalArrayClass> array(
+      ExternalArrayClass::cast(i::Handle<i::JSObject>::cast(jsobj)->elements()),
+      isolate);
   for (int i = 0; i < element_count; i++) {
     array->set(i, static_cast<ElementType>(i));
   }
@@ -16771,7 +16773,7 @@ static void FixedTypedArrayTestHelper(i::ExternalArrayType array_type,
   i::Handle<i::JSTypedArray> jsobj =
       factory->NewJSTypedArray(elements_kind, kElementCount);
   i::Handle<FixedTypedArrayClass> fixed_array(
-      FixedTypedArrayClass::cast(jsobj->elements()));
+      FixedTypedArrayClass::cast(jsobj->elements()), isolate);
   CHECK_EQ(FixedTypedArrayClass::kInstanceType,
            fixed_array->map()->instance_type());
   CHECK_EQ(kElementCount, fixed_array->length());
@@ -17489,7 +17491,7 @@ TEST(ErrorLevelWarning) {
   i::Handle<i::SharedFunctionInfo> obj = i::Handle<i::SharedFunctionInfo>::cast(
       v8::Utils::OpenHandle(*lscript->GetUnboundScript()));
   CHECK(obj->script()->IsScript());
-  i::Handle<i::Script> script(i::Script::cast(obj->script()));
+  i::Handle<i::Script> script(i::Script::cast(obj->script()), i_isolate);
 
   int levels[] = {
       v8::Isolate::kMessageLog, v8::Isolate::kMessageInfo,
@@ -18920,6 +18922,9 @@ TEST(GetHeapSpaceStatistics) {
     v8::HeapSpaceStatistics space_statistics;
     isolate->GetHeapSpaceStatistics(&space_statistics, i);
     CHECK_NOT_NULL(space_statistics.space_name());
+    if (strcmp(space_statistics.space_name(), "new_large_object_space") == 0) {
+      continue;
+    }
     CHECK_GT(space_statistics.space_size(), 0u);
     total_size += space_statistics.space_size();
     CHECK_GT(space_statistics.space_used_size(), 0u);
@@ -20231,7 +20236,8 @@ THREADED_TEST(TwoByteStringInOneByteCons) {
   int length = string->length();
   CHECK(string->IsOneByteRepresentation());
 
-  i::Handle<i::String> flat_string = i::String::Flatten(string);
+  i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(context->GetIsolate());
+  i::Handle<i::String> flat_string = i::String::Flatten(i_isolate, string);
 
   CHECK(string->IsOneByteRepresentation());
   CHECK(flat_string->IsOneByteRepresentation());
@@ -25014,6 +25020,7 @@ TEST(ScriptNameAndLineNumber) {
 TEST(ScriptPositionInfo) {
   LocalContext env;
   v8::Isolate* isolate = env->GetIsolate();
+  i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(isolate);
   v8::HandleScope scope(isolate);
   const char* url = "http://www.foo.com/foo.js";
   v8::ScriptOrigin origin(v8_str(url), v8::Integer::New(isolate, 13));
@@ -25028,7 +25035,7 @@ TEST(ScriptPositionInfo) {
       v8::Utils::OpenHandle(*script->GetUnboundScript()));
   CHECK(obj->script()->IsScript());
 
-  i::Handle<i::Script> script1(i::Script::cast(obj->script()));
+  i::Handle<i::Script> script1(i::Script::cast(obj->script()), i_isolate);
 
   v8::internal::Script::PositionInfo info;
 
@@ -28256,5 +28263,119 @@ TEST(AtomicsWaitCallback) {
     CHECK(try_catch.HasCaught());
     CHECK(try_catch.Exception()->IsInt32());
     CHECK_EQ(try_catch.Exception().As<v8::Int32>()->Value(), 42);
+  }
+}
+
+TEST(BigIntAPI) {
+  LocalContext env;
+  v8::Isolate* isolate = env->GetIsolate();
+  v8::HandleScope scope(isolate);
+  bool lossless;
+  uint64_t words1[10];
+  uint64_t words2[10];
+
+  {
+    Local<Value> bi = CompileRun("12n");
+    CHECK(bi->IsBigInt());
+
+    CHECK_EQ(bi.As<v8::BigInt>()->Uint64Value(), 12);
+    CHECK_EQ(bi.As<v8::BigInt>()->Uint64Value(&lossless), 12);
+    CHECK_EQ(lossless, true);
+    CHECK_EQ(bi.As<v8::BigInt>()->Int64Value(), 12);
+    CHECK_EQ(bi.As<v8::BigInt>()->Int64Value(&lossless), 12);
+    CHECK_EQ(lossless, true);
+  }
+
+  {
+    Local<Value> bi = CompileRun("-12n");
+    CHECK(bi->IsBigInt());
+
+    CHECK_EQ(bi.As<v8::BigInt>()->Uint64Value(), static_cast<uint64_t>(-12));
+    CHECK_EQ(bi.As<v8::BigInt>()->Uint64Value(&lossless),
+             static_cast<uint64_t>(-12));
+    CHECK_EQ(lossless, false);
+    CHECK_EQ(bi.As<v8::BigInt>()->Int64Value(), -12);
+    CHECK_EQ(bi.As<v8::BigInt>()->Int64Value(&lossless), -12);
+    CHECK_EQ(lossless, true);
+  }
+
+  {
+    Local<Value> bi = CompileRun("123456789012345678901234567890n");
+    CHECK(bi->IsBigInt());
+
+    CHECK_EQ(bi.As<v8::BigInt>()->Uint64Value(), 14083847773837265618ULL);
+    CHECK_EQ(bi.As<v8::BigInt>()->Uint64Value(&lossless),
+             14083847773837265618ULL);
+    CHECK_EQ(lossless, false);
+    CHECK_EQ(bi.As<v8::BigInt>()->Int64Value(), -4362896299872285998LL);
+    CHECK_EQ(bi.As<v8::BigInt>()->Int64Value(&lossless),
+             -4362896299872285998LL);
+    CHECK_EQ(lossless, false);
+  }
+
+  {
+    Local<Value> bi = CompileRun("-123456789012345678901234567890n");
+    CHECK(bi->IsBigInt());
+
+    CHECK_EQ(bi.As<v8::BigInt>()->Uint64Value(), 4362896299872285998LL);
+    CHECK_EQ(bi.As<v8::BigInt>()->Uint64Value(&lossless),
+             4362896299872285998LL);
+    CHECK_EQ(lossless, false);
+    CHECK_EQ(bi.As<v8::BigInt>()->Int64Value(), 4362896299872285998LL);
+    CHECK_EQ(bi.As<v8::BigInt>()->Int64Value(&lossless), 4362896299872285998LL);
+    CHECK_EQ(lossless, false);
+  }
+
+  {
+    Local<v8::BigInt> bi =
+        v8::BigInt::NewFromWords(env.local(), 0, 0, words1).ToLocalChecked();
+    CHECK_EQ(bi->Uint64Value(), 0);
+    CHECK_EQ(bi->WordCount(), 0);
+  }
+
+  {
+    TryCatch try_catch(isolate);
+    v8::MaybeLocal<v8::BigInt> bi = v8::BigInt::NewFromWords(
+        env.local(), 0, std::numeric_limits<int>::max(), words1);
+    CHECK(bi.IsEmpty());
+    CHECK(try_catch.HasCaught());
+  }
+
+  {
+    TryCatch try_catch(isolate);
+    v8::MaybeLocal<v8::BigInt> bi =
+        v8::BigInt::NewFromWords(env.local(), 0, -1, words1);
+    CHECK(bi.IsEmpty());
+    CHECK(try_catch.HasCaught());
+  }
+
+  {
+    TryCatch try_catch(isolate);
+    v8::MaybeLocal<v8::BigInt> bi =
+        v8::BigInt::NewFromWords(env.local(), 0, 1 << 30, words1);
+    CHECK(bi.IsEmpty());
+    CHECK(try_catch.HasCaught());
+  }
+
+  for (int sign_bit = 0; sign_bit <= 1; sign_bit++) {
+    words1[0] = 0xffffffff00000000ULL;
+    words1[1] = 0x00000000ffffffffULL;
+    v8::Local<v8::BigInt> bi =
+        v8::BigInt::NewFromWords(env.local(), sign_bit, 2, words1)
+            .ToLocalChecked();
+    CHECK_EQ(bi->Uint64Value(&lossless),
+             sign_bit ? static_cast<uint64_t>(-static_cast<int64_t>(words1[0]))
+                      : words1[0]);
+    CHECK_EQ(lossless, false);
+    CHECK_EQ(bi->Int64Value(&lossless), sign_bit
+                                            ? -static_cast<int64_t>(words1[0])
+                                            : static_cast<int64_t>(words1[0]));
+    CHECK_EQ(lossless, false);
+    CHECK_EQ(bi->WordCount(), 2);
+    int real_sign_bit;
+    int word_count = arraysize(words2);
+    bi->ToWordsArray(&real_sign_bit, &word_count, words2);
+    CHECK_EQ(real_sign_bit, sign_bit);
+    CHECK_EQ(word_count, 2);
   }
 }

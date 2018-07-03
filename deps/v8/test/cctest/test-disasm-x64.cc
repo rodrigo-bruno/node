@@ -52,7 +52,7 @@ TEST(DisasmX64) {
   Isolate* isolate = CcTest::i_isolate();
   HandleScope scope(isolate);
   v8::internal::byte buffer[8192];
-  Assembler assm(isolate, buffer, sizeof buffer);
+  Assembler assm(Assembler::Options{}, buffer, sizeof buffer);
   DummyStaticFunction(nullptr);  // just bloody use it (DELETE; debugging)
 
   // Short immediate instructions
@@ -965,7 +965,7 @@ TEST(DisasmX64) {
   USE(code);
 #ifdef OBJECT_PRINT
   StdoutStream os;
-  code->Print(os);
+  code->Print(isolate, os);
   Address begin = code->raw_instruction_start();
   Address end = code->raw_instruction_end();
   disasm::Disassembler::Disassemble(stdout, reinterpret_cast<byte*>(begin),

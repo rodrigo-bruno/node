@@ -134,7 +134,8 @@ static void PrintRelocInfo(StringBuilder* out, Isolate* isolate,
     out->AddFormatted("    ;; external reference (%s)", reference_name);
   } else if (RelocInfo::IsCodeTarget(rmode)) {
     out->AddFormatted("    ;; code:");
-    Code* code = Code::GetCodeFromTargetAddress(relocinfo->target_address());
+    Code* code = isolate->heap()->GcSafeFindCodeForInnerPointer(
+        relocinfo->target_address());
     Code::Kind kind = code->kind();
     if (kind == Code::STUB) {
       // Get the STUB key and extract major and minor key.
@@ -152,26 +153,15 @@ static void PrintRelocInfo(StringBuilder* out, Isolate* isolate,
     }
   } else if (RelocInfo::IsRuntimeEntry(rmode) && isolate &&
              isolate->deoptimizer_data() != nullptr) {
-    // A runtime entry reloinfo might be a deoptimization bailout->
+    // A runtime entry relocinfo might be a deoptimization bailout.
     Address addr = relocinfo->target_address();
-    int id =
-        Deoptimizer::GetDeoptimizationId(isolate, addr, DeoptimizeKind::kEager);
-    if (id == Deoptimizer::kNotDeoptimizationEntry) {
-      id = Deoptimizer::GetDeoptimizationId(isolate, addr,
-                                            DeoptimizeKind::kLazy);
-      if (id == Deoptimizer::kNotDeoptimizationEntry) {
-        id = Deoptimizer::GetDeoptimizationId(isolate, addr,
-                                              DeoptimizeKind::kSoft);
-        if (id == Deoptimizer::kNotDeoptimizationEntry) {
-          out->AddFormatted("    ;; %s", RelocInfo::RelocModeName(rmode));
-        } else {
-          out->AddFormatted("    ;; soft deoptimization bailout %d", id);
-        }
-      } else {
-        out->AddFormatted("    ;; lazy deoptimization bailout %d", id);
-      }
+    DeoptimizeKind type;
+    if (Deoptimizer::IsDeoptimizationEntry(isolate, addr, &type)) {
+      int id = relocinfo->GetDeoptimizationId(isolate, type);
+      out->AddFormatted("    ;; %s deoptimization bailout %d",
+                        Deoptimizer::MessageFor(type), id);
     } else {
-      out->AddFormatted("    ;; deoptimization bailout %d", id);
+      out->AddFormatted("    ;; %s", RelocInfo::RelocModeName(rmode));
     }
   } else {
     out->AddFormatted("    ;; %s", RelocInfo::RelocModeName(rmode));

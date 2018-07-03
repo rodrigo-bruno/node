@@ -33,6 +33,7 @@
 #include "src/debug/debug-evaluate.h"
 #include "src/debug/debug-type-profile.h"
 #include "src/debug/debug.h"
+#include "src/debug/liveedit.h"
 #include "src/deoptimizer.h"
 #include "src/detachable-vector.h"
 #include "src/execution.h"
@@ -770,8 +771,11 @@ StartupData SnapshotCreator::CreateBlob(
       // Complete in-object slack tracking for all functions.
       fun->CompleteInobjectSlackTrackingIfActive();
 
-      // Also, clear out feedback vectors.
-      fun->feedback_cell()->set_value(isolate->heap()->undefined_value());
+      // Also, clear out feedback vectors, or any optimized code.
+      if (fun->has_feedback_vector()) {
+        fun->feedback_cell()->set_value(isolate->heap()->undefined_value());
+        fun->set_code(isolate->builtins()->builtin(i::Builtins::kCompileLazy));
+      }
     }
 
     // Clear out re-compilable data from all shared function infos. Any
@@ -1009,7 +1013,7 @@ i::Object** V8::GlobalizeReference(i::Isolate* isolate, i::Object** obj) {
   i::Handle<i::Object> result = isolate->global_handles()->Create(*obj);
 #ifdef VERIFY_HEAP
   if (i::FLAG_verify_heap) {
-    (*obj)->ObjectVerify();
+    (*obj)->ObjectVerify(isolate);
   }
 #endif  // VERIFY_HEAP
   return result.location();
@@ -2328,7 +2332,7 @@ Local<Value> Module::GetModuleNamespace() {
       "v8::Module::GetModuleNamespace must be used on an instantiated module");
   i::Handle<i::Module> self = Utils::OpenHandle(this);
   i::Handle<i::JSModuleNamespace> module_namespace =
-      i::Module::GetModuleNamespace(self);
+      i::Module::GetModuleNamespace(self->GetIsolate(), self);
   return ToApiHandle<Value>(module_namespace);
 }
 
@@ -2348,8 +2352,8 @@ Maybe<bool> Module::InstantiateModule(Local<Context> context,
   auto isolate = reinterpret_cast<i::Isolate*>(context->GetIsolate());
   ENTER_V8(isolate, context, Module, InstantiateModule, Nothing<bool>(),
            i::HandleScope);
-  has_pending_exception =
-      !i::Module::Instantiate(Utils::OpenHandle(this), context, callback);
+  has_pending_exception = !i::Module::Instantiate(
+      isolate, Utils::OpenHandle(this), context, callback);
   RETURN_ON_FAILED_EXECUTION_PRIMITIVE(bool);
   return Just(true);
 }
@@ -2368,7 +2372,7 @@ MaybeLocal<Value> Module::Evaluate(Local<Context> context) {
   CHECK_GE(self->status(), i::Module::kInstantiated);
 
   Local<Value> result;
-  has_pending_exception = !ToLocal(i::Module::Evaluate(self), &result);
+  has_pending_exception = !ToLocal(i::Module::Evaluate(isolate, self), &result);
   RETURN_ON_FAILED_EXECUTION(Value);
   RETURN_ESCAPED(result);
 }
@@ -3133,7 +3137,7 @@ bool StackFrame::IsWasm() const { return Utils::OpenHandle(this)->is_wasm(); }
 MaybeLocal<Value> JSON::Parse(Isolate* v8_isolate, Local<String> json_string) {
   PREPARE_FOR_EXECUTION(v8_isolate->GetCurrentContext(), JSON, Parse, Value);
   i::Handle<i::String> string = Utils::OpenHandle(*json_string);
-  i::Handle<i::String> source = i::String::Flatten(string);
+  i::Handle<i::String> source = i::String::Flatten(isolate, string);
   i::Handle<i::Object> undefined = isolate->factory()->undefined_value();
   auto maybe = source->IsSeqOneByteString()
                    ? i::JsonParser<true>::Parse(isolate, source, undefined)
@@ -3148,7 +3152,7 @@ MaybeLocal<Value> JSON::Parse(Local<Context> context,
                               Local<String> json_string) {
   PREPARE_FOR_EXECUTION(context, JSON, Parse, Value);
   i::Handle<i::String> string = Utils::OpenHandle(*json_string);
-  i::Handle<i::String> source = i::String::Flatten(string);
+  i::Handle<i::String> source = i::String::Flatten(isolate, string);
   i::Handle<i::Object> undefined = isolate->factory()->undefined_value();
   auto maybe = source->IsSeqOneByteString()
                    ? i::JsonParser<true>::Parse(isolate, source, undefined)
@@ -3582,7 +3586,10 @@ bool Value::IsBoolean() const {
 
 
 bool Value::IsExternal() const {
-  return Utils::OpenHandle(this)->IsExternal();
+  i::Handle<i::Object> obj = Utils::OpenHandle(this);
+  if (!obj->IsHeapObject()) return false;
+  i::Handle<i::HeapObject> heap_obj = i::Handle<i::HeapObject>::cast(obj);
+  return heap_obj->IsExternal(heap_obj->GetIsolate());
 }
 
 
@@ -3795,7 +3802,7 @@ void i::Internals::CheckInitializedImpl(v8::Isolate* external_isolate) {
 
 
 void External::CheckCast(v8::Value* that) {
-  Utils::ApiCheck(Utils::OpenHandle(that)->IsExternal(), "v8::External::Cast",
+  Utils::ApiCheck(that->IsExternal(), "v8::External::Cast",
                   "Could not convert to external");
 }
 
@@ -4160,9 +4167,10 @@ MaybeLocal<Uint32> Value::ToArrayIndex(Local<Context> context) const {
 
 
 Maybe<bool> Value::Equals(Local<Context> context, Local<Value> that) const {
+  i::Isolate* isolate = Utils::OpenHandle(*context)->GetIsolate();
   auto self = Utils::OpenHandle(this);
   auto other = Utils::OpenHandle(*that);
-  return i::Object::Equals(self, other);
+  return i::Object::Equals(isolate, self, other);
 }
 
 
@@ -5170,8 +5178,8 @@ MaybeLocal<Object> Function::NewInstanceWithSideEffectType(
         i::JSFunction::cast(*self)->shared()->get_api_func_data()->call_code();
     if (obj->IsCallHandlerInfo()) {
       i::CallHandlerInfo* handler_info = i::CallHandlerInfo::cast(obj);
-      if (!handler_info->IsSideEffectFreeCallHandlerInfo()) {
-        handler_info->SetNextCallHasNoSideEffect();
+      if (!handler_info->IsSideEffectFreeCallHandlerInfo(isolate)) {
+        handler_info->SetNextCallHasNoSideEffect(isolate);
       }
     }
   }
@@ -5186,10 +5194,10 @@ MaybeLocal<Object> Function::NewInstanceWithSideEffectType(
       i::CallHandlerInfo* handler_info = i::CallHandlerInfo::cast(obj);
       if (has_pending_exception) {
         // Restore the map if an exception prevented restoration.
-        handler_info->NextCallHasNoSideEffect();
+        handler_info->NextCallHasNoSideEffect(isolate);
       } else {
-        DCHECK(handler_info->IsSideEffectCallHandlerInfo() ||
-               handler_info->IsSideEffectFreeCallHandlerInfo());
+        DCHECK(handler_info->IsSideEffectCallHandlerInfo(isolate) ||
+               handler_info->IsSideEffectFreeCallHandlerInfo(isolate));
       }
     }
   }
@@ -5274,7 +5282,7 @@ Local<Value> Function::GetDebugName() const {
   }
   auto func = i::Handle<i::JSFunction>::cast(self);
   i::Handle<i::String> name = i::JSFunction::GetDebugName(func);
-  return Utils::ToLocal(i::Handle<i::Object>(*name, name->GetIsolate()));
+  return Utils::ToLocal(i::Handle<i::Object>(*name, self->GetIsolate()));
 }
 
 
@@ -5506,10 +5514,10 @@ bool String::ContainsOnlyOneByte() const {
   return helper.Check(*str);
 }
 
-
+// TODO(v8:7786): Deprecate this function and pass the isolate in instead.
 int String::Utf8Length() const {
   i::Handle<i::String> str = Utils::OpenHandle(this);
-  str = i::String::Flatten(str);
+  str = i::String::Flatten(str->GetIsolate(), str);
   int length = str->length();
   if (length == 0) return 0;
   i::DisallowHeapAllocation no_gc;
@@ -5740,7 +5748,7 @@ int String::WriteUtf8(char* buffer,
   i::Isolate* isolate = str->GetIsolate();
   LOG_API(isolate, String, WriteUtf8);
   ENTER_V8_NO_SCRIPT_NO_EXCEPTION(isolate);
-  str = i::String::Flatten(str);  // Flatten the string for efficiency.
+  str = i::String::Flatten(isolate, str);  // Flatten the string for efficiency.
   const int string_length = str->length();
   bool write_null = !(options & NO_NULL_TERMINATION);
   bool replace_invalid_utf8 = (options & REPLACE_INVALID_UTF8);
@@ -5790,7 +5798,7 @@ static inline int WriteHelper(const String* string,
   ENTER_V8_NO_SCRIPT_NO_EXCEPTION(isolate);
   DCHECK(start >= 0 && length >= -1);
   i::Handle<i::String> str = Utils::OpenHandle(string);
-  str = i::String::Flatten(str);
+  str = i::String::Flatten(isolate, str);
   int end = start + length;
   if ((length == -1) || (length > str->length() - start) )
     end = str->length();
@@ -6446,8 +6454,8 @@ MaybeLocal<v8::Object> ObjectTemplate::NewInstance(Local<Context> context) {
   PREPARE_FOR_EXECUTION(context, ObjectTemplate, NewInstance, Object);
   auto self = Utils::OpenHandle(this);
   Local<Object> result;
-  has_pending_exception =
-      !ToLocal<Object>(i::ApiNatives::InstantiateObject(self), &result);
+  has_pending_exception = !ToLocal<Object>(
+      i::ApiNatives::InstantiateObject(isolate, self), &result);
   RETURN_ON_FAILED_EXECUTION(Object);
   RETURN_ESCAPED(result);
 }
@@ -7062,7 +7070,7 @@ void Map::Clear() {
   i::Isolate* isolate = self->GetIsolate();
   LOG_API(isolate, Map, Clear);
   ENTER_V8_NO_SCRIPT_NO_EXCEPTION(isolate);
-  i::JSMap::Clear(self);
+  i::JSMap::Clear(isolate, self);
 }
 
 
@@ -7193,7 +7201,7 @@ void Set::Clear() {
   i::Isolate* isolate = self->GetIsolate();
   LOG_API(isolate, Set, Clear);
   ENTER_V8_NO_SCRIPT_NO_EXCEPTION(isolate);
-  i::JSSet::Clear(self);
+  i::JSSet::Clear(isolate, self);
 }
 
 
@@ -7442,11 +7450,19 @@ MaybeLocal<Proxy> Proxy::New(Local<Context> context, Local<Object> local_target,
   RETURN_ESCAPED(result);
 }
 
-Local<String> WasmCompiledModule::GetWasmWireBytes() {
+WasmCompiledModule::BufferReference WasmCompiledModule::GetWasmWireBytesRef() {
   i::Handle<i::WasmModuleObject> obj =
       i::Handle<i::WasmModuleObject>::cast(Utils::OpenHandle(this));
-  i::Handle<i::String> wire_bytes(obj->module_bytes(), obj->GetIsolate());
-  return Local<String>::Cast(Utils::ToLocal(wire_bytes));
+  i::Vector<const uint8_t> bytes_vec = obj->native_module()->wire_bytes();
+  return {bytes_vec.start(), bytes_vec.size()};
+}
+
+Local<String> WasmCompiledModule::GetWasmWireBytes() {
+  BufferReference ref = GetWasmWireBytesRef();
+  CHECK_LE(ref.size, String::kMaxLength);
+  return String::NewFromOneByte(GetIsolate(), ref.start, NewStringType::kNormal,
+                                static_cast<int>(ref.size))
+      .ToLocalChecked();
 }
 
 // Currently, wasm modules are bound, both to Isolate and to
@@ -7458,32 +7474,28 @@ WasmCompiledModule::GetTransferrableModule() {
   i::DisallowHeapAllocation no_gc;
   WasmCompiledModule::SerializedModule compiled_part = Serialize();
 
-  Local<String> wire_bytes = GetWasmWireBytes();
-  size_t wire_size = static_cast<size_t>(wire_bytes->Length());
-  uint8_t* bytes = new uint8_t[wire_size];
-  wire_bytes->WriteOneByte(bytes, 0, wire_bytes->Length());
+  BufferReference wire_bytes_ref = GetWasmWireBytesRef();
+  size_t wire_size = wire_bytes_ref.size;
+  std::unique_ptr<uint8_t[]> wire_bytes_copy(new uint8_t[wire_size]);
+  memcpy(wire_bytes_copy.get(), wire_bytes_ref.start, wire_size);
 
-  return TransferrableModule(
-      std::move(compiled_part),
-      std::make_pair(
-          std::unique_ptr<const uint8_t[]>(const_cast<const uint8_t*>(bytes)),
-          wire_size));
+  return TransferrableModule(std::move(compiled_part),
+                             {std::move(wire_bytes_copy), wire_size});
 }
 
 MaybeLocal<WasmCompiledModule> WasmCompiledModule::FromTransferrableModule(
     Isolate* isolate,
     const WasmCompiledModule::TransferrableModule& transferrable_module) {
   MaybeLocal<WasmCompiledModule> ret =
-      Deserialize(isolate, AsCallerOwned(transferrable_module.compiled_code),
-                  AsCallerOwned(transferrable_module.wire_bytes));
+      Deserialize(isolate, AsReference(transferrable_module.compiled_code),
+                  AsReference(transferrable_module.wire_bytes));
   return ret;
 }
 
 WasmCompiledModule::SerializedModule WasmCompiledModule::Serialize() {
   i::Handle<i::WasmModuleObject> obj =
       i::Handle<i::WasmModuleObject>::cast(Utils::OpenHandle(this));
-  i::wasm::NativeModule* native_module =
-      obj->compiled_module()->GetNativeModule();
+  i::wasm::NativeModule* native_module = obj->native_module();
   size_t buffer_size =
       i::wasm::GetSerializedNativeModuleSize(obj->GetIsolate(), native_module);
   std::unique_ptr<uint8_t[]> buffer(new uint8_t[buffer_size]);
@@ -7494,14 +7506,13 @@ WasmCompiledModule::SerializedModule WasmCompiledModule::Serialize() {
 }
 
 MaybeLocal<WasmCompiledModule> WasmCompiledModule::Deserialize(
-    Isolate* isolate,
-    const WasmCompiledModule::CallerOwnedBuffer& serialized_module,
-    const WasmCompiledModule::CallerOwnedBuffer& wire_bytes) {
+    Isolate* isolate, WasmCompiledModule::BufferReference serialized_module,
+    WasmCompiledModule::BufferReference wire_bytes) {
   i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(isolate);
   i::MaybeHandle<i::WasmModuleObject> maybe_module_object =
       i::wasm::DeserializeNativeModule(
-          i_isolate, {serialized_module.first, serialized_module.second},
-          {wire_bytes.first, wire_bytes.second});
+          i_isolate, {serialized_module.start, serialized_module.size},
+          {wire_bytes.start, wire_bytes.size});
   i::Handle<i::WasmModuleObject> module_object;
   if (!maybe_module_object.ToHandle(&module_object)) {
     return MaybeLocal<WasmCompiledModule>();
@@ -7511,15 +7522,14 @@ MaybeLocal<WasmCompiledModule> WasmCompiledModule::Deserialize(
 }
 
 MaybeLocal<WasmCompiledModule> WasmCompiledModule::DeserializeOrCompile(
-    Isolate* isolate,
-    const WasmCompiledModule::CallerOwnedBuffer& serialized_module,
-    const WasmCompiledModule::CallerOwnedBuffer& wire_bytes) {
+    Isolate* isolate, WasmCompiledModule::BufferReference serialized_module,
+    WasmCompiledModule::BufferReference wire_bytes) {
   MaybeLocal<WasmCompiledModule> ret =
       Deserialize(isolate, serialized_module, wire_bytes);
   if (!ret.IsEmpty()) {
     return ret;
   }
-  return Compile(isolate, wire_bytes.first, wire_bytes.second);
+  return Compile(isolate, wire_bytes.start, wire_bytes.size);
 }
 
 MaybeLocal<WasmCompiledModule> WasmCompiledModule::Compile(Isolate* isolate,
@@ -7653,8 +7663,7 @@ v8::ArrayBuffer::Contents v8::ArrayBuffer::Externalize() {
     // longer track it.
     //
     // TODO(eholk): Find a way to track this across externalization
-    isolate->wasm_engine()->memory_tracker()->ReleaseAllocation(
-        self->backing_store());
+    self->StopTrackingWasmMemory(isolate);
   }
   isolate->heap()->UnregisterArrayBuffer(*self);
 
@@ -7737,7 +7746,8 @@ Local<ArrayBuffer> v8::ArrayBufferView::Buffer() {
     i::Handle<i::JSDataView> data_view(i::JSDataView::cast(*obj),
                                        obj->GetIsolate());
     DCHECK(data_view->buffer()->IsJSArrayBuffer());
-    buffer = i::handle(i::JSArrayBuffer::cast(data_view->buffer()));
+    buffer = i::handle(i::JSArrayBuffer::cast(data_view->buffer()),
+                       data_view->GetIsolate());
   } else {
     DCHECK(obj->IsJSTypedArray());
     buffer = i::JSTypedArray::cast(*obj)->GetBuffer();
@@ -7887,8 +7897,7 @@ v8::SharedArrayBuffer::Contents v8::SharedArrayBuffer::Externalize() {
     // longer track it.
     //
     // TODO(eholk): Find a way to track this across externalization
-    isolate->wasm_engine()->memory_tracker()->ReleaseAllocation(
-        self->backing_store());
+    self->StopTrackingWasmMemory(isolate);
   }
   isolate->heap()->UnregisterArrayBuffer(*self);
 
@@ -8064,6 +8073,49 @@ Local<BigInt> v8::BigInt::New(Isolate* isolate, int64_t value) {
   ENTER_V8_NO_SCRIPT_NO_EXCEPTION(internal_isolate);
   i::Handle<i::BigInt> result = i::BigInt::FromInt64(internal_isolate, value);
   return Utils::ToLocal(result);
+}
+
+Local<BigInt> v8::BigInt::NewFromUnsigned(Isolate* isolate, uint64_t value) {
+  CHECK(i::FLAG_harmony_bigint);
+  i::Isolate* internal_isolate = reinterpret_cast<i::Isolate*>(isolate);
+  ENTER_V8_NO_SCRIPT_NO_EXCEPTION(internal_isolate);
+  i::Handle<i::BigInt> result = i::BigInt::FromUint64(internal_isolate, value);
+  return Utils::ToLocal(result);
+}
+
+MaybeLocal<BigInt> v8::BigInt::NewFromWords(Local<Context> context,
+                                            int sign_bit, int word_count,
+                                            const uint64_t* words) {
+  CHECK(i::FLAG_harmony_bigint);
+  i::Isolate* isolate = reinterpret_cast<i::Isolate*>(context->GetIsolate());
+  ENTER_V8_NO_SCRIPT(isolate, context, BigInt, NewFromWords,
+                     MaybeLocal<BigInt>(), InternalEscapableScope);
+  i::MaybeHandle<i::BigInt> result =
+      i::BigInt::FromWords64(isolate, sign_bit, word_count, words);
+  has_pending_exception = result.is_null();
+  RETURN_ON_FAILED_EXECUTION(BigInt);
+  RETURN_ESCAPED(Utils::ToLocal(result.ToHandleChecked()));
+}
+
+uint64_t v8::BigInt::Uint64Value(bool* lossless) const {
+  i::Handle<i::BigInt> handle = Utils::OpenHandle(this);
+  return handle->AsUint64(lossless);
+}
+
+int64_t v8::BigInt::Int64Value(bool* lossless) const {
+  i::Handle<i::BigInt> handle = Utils::OpenHandle(this);
+  return handle->AsInt64(lossless);
+}
+
+int BigInt::WordCount() const {
+  i::Handle<i::BigInt> handle = Utils::OpenHandle(this);
+  return handle->Words64Count();
+}
+
+void BigInt::ToWordsArray(int* sign_bit, int* word_count,
+                          uint64_t* words) const {
+  i::Handle<i::BigInt> handle = Utils::OpenHandle(this);
+  return handle->ToWordsArray64(sign_bit, word_count, words);
 }
 
 void Isolate::ReportExternalAllocationLimitReached() {
@@ -8755,9 +8807,9 @@ void Isolate::LowMemoryNotification() {
 int Isolate::ContextDisposedNotification(bool dependant_context) {
   i::Isolate* isolate = reinterpret_cast<i::Isolate*>(this);
   if (!dependant_context) {
-    // We left the current context, we can abort all running WebAssembly
-    // compilations.
-    isolate->wasm_engine()->AbortAllCompileJobs();
+    // We left the current context, we can abort all WebAssembly compilations on
+    // that isolate.
+    isolate->wasm_engine()->AbortCompileJobsOnIsolate(isolate);
   }
   // TODO(ahaas): move other non-heap activity out of the heap call.
   return isolate->heap()->NotifyContextDisposed(dependant_context);
@@ -9129,11 +9181,6 @@ v8_inspector::V8Inspector* debug::GetInspector(Isolate* isolate) {
   return reinterpret_cast<i::Isolate*>(isolate)->inspector();
 }
 
-void debug::SetLiveEditEnabled(Isolate* isolate, bool enable) {
-  i::Isolate* internal_isolate = reinterpret_cast<i::Isolate*>(isolate);
-  internal_isolate->debug()->set_live_edit_enabled(enable);
-}
-
 void debug::SetBreakOnNextFunctionCall(Isolate* isolate) {
   reinterpret_cast<i::Isolate*>(isolate)->debug()->SetBreakOnNextFunctionCall();
 }
@@ -9400,11 +9447,12 @@ v8::debug::Location debug::Script::GetSourceLocation(int offset) const {
 }
 
 bool debug::Script::SetScriptSource(v8::Local<v8::String> newSource,
-                                    bool preview, bool* stack_changed) const {
+                                    bool preview,
+                                    debug::LiveEditResult* result) const {
   i::Handle<i::Script> script = Utils::OpenHandle(this);
   i::Isolate* isolate = script->GetIsolate();
   return isolate->debug()->SetScriptSource(
-      script, Utils::OpenHandle(*newSource), preview, stack_changed);
+      script, Utils::OpenHandle(*newSource), preview, result);
 }
 
 bool debug::Script::SetBreakpoint(v8::Local<v8::String> condition,
@@ -9442,7 +9490,7 @@ int debug::WasmScript::NumFunctions() const {
   DCHECK_EQ(i::Script::TYPE_WASM, script->type());
   i::WasmModuleObject* module_object =
       i::WasmModuleObject::cast(script->wasm_module_object());
-  i::wasm::WasmModule* module = module_object->module();
+  const i::wasm::WasmModule* module = module_object->module();
   DCHECK_GE(i::kMaxInt, module->functions.size());
   return static_cast<int>(module->functions.size());
 }
@@ -9453,7 +9501,7 @@ int debug::WasmScript::NumImportedFunctions() const {
   DCHECK_EQ(i::Script::TYPE_WASM, script->type());
   i::WasmModuleObject* module_object =
       i::WasmModuleObject::cast(script->wasm_module_object());
-  i::wasm::WasmModule* module = module_object->module();
+  const i::wasm::WasmModule* module = module_object->module();
   DCHECK_GE(i::kMaxInt, module->num_imported_functions);
   return static_cast<int>(module->num_imported_functions);
 }
@@ -9465,10 +9513,10 @@ std::pair<int, int> debug::WasmScript::GetFunctionRange(
   DCHECK_EQ(i::Script::TYPE_WASM, script->type());
   i::WasmModuleObject* module_object =
       i::WasmModuleObject::cast(script->wasm_module_object());
-  i::wasm::WasmModule* module = module_object->module();
+  const i::wasm::WasmModule* module = module_object->module();
   DCHECK_LE(0, function_index);
   DCHECK_GT(module->functions.size(), function_index);
-  i::wasm::WasmFunction& func = module->functions[function_index];
+  const i::wasm::WasmFunction& func = module->functions[function_index];
   DCHECK_GE(i::kMaxInt, func.code.offset());
   DCHECK_GE(i::kMaxInt, func.code.end_offset());
   return std::make_pair(static_cast<int>(func.code.offset()),
@@ -9481,13 +9529,12 @@ uint32_t debug::WasmScript::GetFunctionHash(int function_index) {
   DCHECK_EQ(i::Script::TYPE_WASM, script->type());
   i::WasmModuleObject* module_object =
       i::WasmModuleObject::cast(script->wasm_module_object());
-  i::wasm::WasmModule* module = module_object->module();
+  const i::wasm::WasmModule* module = module_object->module();
   DCHECK_LE(0, function_index);
   DCHECK_GT(module->functions.size(), function_index);
-  i::wasm::WasmFunction& func = module->functions[function_index];
-  i::SeqOneByteString* module_bytes = module_object->module_bytes();
+  const i::wasm::WasmFunction& func = module->functions[function_index];
   i::wasm::ModuleWireBytes wire_bytes(
-      module_bytes->GetFlatContent().ToOneByteVector());
+      module_object->native_module()->wire_bytes());
   i::Vector<const i::byte> function_bytes = wire_bytes.GetFunctionBytes(&func);
   // TODO(herhut): Maybe also take module, name and signature into account.
   return i::StringHasher::HashSequentialString(function_bytes.start(),
@@ -9585,9 +9632,12 @@ void debug::ResetBlackboxedStateCache(Isolate* v8_isolate,
   i::Isolate* isolate = reinterpret_cast<i::Isolate*>(v8_isolate);
   ENTER_V8_NO_SCRIPT_NO_EXCEPTION(isolate);
   i::DisallowHeapAllocation no_gc;
-  i::SharedFunctionInfo::ScriptIterator iter(Utils::OpenHandle(*script));
+  i::SharedFunctionInfo::ScriptIterator iter(isolate,
+                                             *Utils::OpenHandle(*script));
   while (i::SharedFunctionInfo* info = iter.Next()) {
-    info->set_computed_debug_is_blackboxed(false);
+    if (info->HasDebugInfo()) {
+      info->GetDebugInfo()->set_computed_debug_is_blackboxed(false);
+    }
   }
 }
 
@@ -9715,7 +9765,7 @@ MaybeLocal<debug::Script> debug::GeneratorObject::Script() {
 
 Local<Function> debug::GeneratorObject::Function() {
   i::Handle<i::JSGeneratorObject> obj = Utils::OpenHandle(this);
-  return Utils::ToLocal(handle(obj->function()));
+  return Utils::ToLocal(handle(obj->function(), obj->GetIsolate()));
 }
 
 debug::Location debug::GeneratorObject::SuspendedLocation() {
@@ -9833,16 +9883,11 @@ int64_t debug::GetNextRandomInt64(v8::Isolate* v8_isolate) {
 }
 
 int debug::GetDebuggingId(v8::Local<v8::Function> function) {
-  i::JSReceiver* callable = *v8::Utils::OpenHandle(*function);
-  if (!callable->IsJSFunction()) return i::SharedFunctionInfo::kNoDebuggingId;
-  i::JSFunction* fun = i::JSFunction::cast(callable);
-  i::SharedFunctionInfo* shared = fun->shared();
-  int id = shared->debugging_id();
-  if (id == i::SharedFunctionInfo::kNoDebuggingId) {
-    id = shared->GetHeap()->NextDebuggingId();
-    shared->set_debugging_id(id);
-  }
-  DCHECK_NE(i::SharedFunctionInfo::kNoDebuggingId, id);
+  i::Handle<i::JSReceiver> callable = v8::Utils::OpenHandle(*function);
+  if (!callable->IsJSFunction()) return i::DebugInfo::kNoDebuggingId;
+  i::Handle<i::JSFunction> func = i::Handle<i::JSFunction>::cast(callable);
+  int id = func->GetIsolate()->debug()->GetFunctionDebuggingId(func);
+  DCHECK_NE(i::DebugInfo::kNoDebuggingId, id);
   return id;
 }
 
@@ -10218,6 +10263,10 @@ const char* CodeEvent::GetCodeEventTypeName(CodeEventType code_event_type) {
       CODE_EVENTS_LIST(V)
 #undef V
   }
+  // The execution should never pass here
+  UNREACHABLE();
+  // NOTE(mmarchini): Workaround to fix a compiler failure on GCC 4.9
+  return "Unknown";
 }
 
 CodeEventHandler::CodeEventHandler(Isolate* isolate) {

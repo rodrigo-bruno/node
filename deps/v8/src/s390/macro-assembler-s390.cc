@@ -26,9 +26,10 @@
 namespace v8 {
 namespace internal {
 
-MacroAssembler::MacroAssembler(Isolate* isolate, void* buffer, int size,
+MacroAssembler::MacroAssembler(Isolate* isolate, const Options& options,
+                               void* buffer, int size,
                                CodeObjectRequired create_code_object)
-    : TurboAssembler(isolate, buffer, size, create_code_object) {
+    : TurboAssembler(isolate, options, buffer, size, create_code_object) {
   if (create_code_object == CodeObjectRequired::kYes) {
     // Unlike TurboAssembler, which can be used off the main thread and may not
     // allocate, macro assembler creates its own copy of the self-reference
@@ -118,7 +119,6 @@ int TurboAssembler::PopCallerSaved(SaveFPRegsMode fp_mode, Register exclusion1,
   return bytes;
 }
 
-#ifdef V8_EMBEDDED_BUILTINS
 void TurboAssembler::LoadFromConstantsTable(Register destination,
                                             int constant_index) {
   DCHECK(isolate()->heap()->RootCanBeTreatedAsConstant(
@@ -133,23 +133,8 @@ void TurboAssembler::LoadFromConstantsTable(Register destination,
   LoadP(destination, MemOperand(destination, offset), r1);
 }
 
-void TurboAssembler::LoadExternalReference(Register destination,
-                                           int reference_index) {
-  int32_t roots_to_external_reference_offset =
-      Heap::roots_to_external_reference_table_offset() +
-      ExternalReferenceTable::OffsetOfEntry(reference_index);
-
-  LoadP(destination,
-        MemOperand(kRootRegister, roots_to_external_reference_offset));
-}
-
-void TurboAssembler::LoadBuiltin(Register destination, int builtin_index) {
-  DCHECK(Builtins::IsBuiltinId(builtin_index));
-
-  int32_t roots_to_builtins_offset =
-      Heap::roots_to_builtins_offset() + builtin_index * kPointerSize;
-
-  LoadP(destination, MemOperand(kRootRegister, roots_to_builtins_offset));
+void TurboAssembler::LoadRootRelative(Register destination, int32_t offset) {
+  LoadP(destination, MemOperand(kRootRegister, offset));
 }
 
 void TurboAssembler::LoadRootRegisterOffset(Register destination,
@@ -163,7 +148,6 @@ void TurboAssembler::LoadRootRegisterOffset(Register destination,
     lay(destination, MemOperand(kRootRegister, offset));
   }
 }
-#endif  // V8_EMBEDDED_BUILTINS
 
 void TurboAssembler::Jump(Register target, Condition cond) { b(cond, target); }
 
@@ -195,31 +179,28 @@ void TurboAssembler::Jump(Address target, RelocInfo::Mode rmode,
 void TurboAssembler::Jump(Handle<Code> code, RelocInfo::Mode rmode,
                           Condition cond) {
   DCHECK(RelocInfo::IsCodeTarget(rmode));
-#ifdef V8_EMBEDDED_BUILTINS
-  if (root_array_available_ && isolate()->ShouldLoadConstantsFromRootList()) {
-    Register scratch = r1;
-    IndirectLoadConstant(scratch, code);
-    la(scratch, MemOperand(scratch, Code::kHeaderSize - kHeapObjectTag));
-    b(cond, scratch);
-    return;
-  } else if (!isolate()->serializer_enabled()) {
-    int builtin_index = Builtins::kNoBuiltinId;
-    if (isolate()->builtins()->IsBuiltinHandle(code, &builtin_index) &&
-        Builtins::IsIsolateIndependent(builtin_index)) {
-      // Inline the trampoline.
-      EmbeddedData d = EmbeddedData::FromBlob();
-      Address entry = d.InstructionStartOfBuiltin(builtin_index);
-      // Use ip directly instead of using UseScratchRegisterScope, as we do not
-      // preserve scratch registers across calls.
-      // RelocInfo is only necessary if generating code for the snapshot.
-      // Otherwise, the target address is immortal-immovable and never needs to
-      // be fixed up by GC (or deserialization).
-      mov(ip, Operand(entry, RelocInfo::NONE));
-      Jump(ip, cond);
+  if (FLAG_embedded_builtins) {
+    if (root_array_available_ && options().isolate_independent_code) {
+      Register scratch = r1;
+      IndirectLoadConstant(scratch, code);
+      la(scratch, MemOperand(scratch, Code::kHeaderSize - kHeapObjectTag));
+      b(cond, scratch);
       return;
+    } else if (options().inline_offheap_trampolines) {
+      int builtin_index = Builtins::kNoBuiltinId;
+      if (isolate()->builtins()->IsBuiltinHandle(code, &builtin_index) &&
+          Builtins::IsIsolateIndependent(builtin_index)) {
+        // Inline the trampoline.
+        EmbeddedData d = EmbeddedData::FromBlob();
+        Address entry = d.InstructionStartOfBuiltin(builtin_index);
+        // Use ip directly instead of using UseScratchRegisterScope, as we do
+        // not preserve scratch registers across calls.
+        mov(ip, Operand(entry, RelocInfo::OFF_HEAP_TARGET));
+        Jump(ip, cond);
+        return;
+      }
     }
   }
-#endif  // V8_EMBEDDED_BUILTINS
   jump(code, rmode, cond);
 }
 
@@ -292,33 +273,30 @@ void TurboAssembler::Call(Handle<Code> code, RelocInfo::Mode rmode,
                           Condition cond) {
   DCHECK(RelocInfo::IsCodeTarget(rmode) && cond == al);
 
-#ifdef V8_EMBEDDED_BUILTINS
-  if (root_array_available_ && isolate()->ShouldLoadConstantsFromRootList()) {
-    // Use ip directly instead of using UseScratchRegisterScope, as we do not
-    // preserve scratch registers across calls.
-    IndirectLoadConstant(ip, code);
-    la(ip, MemOperand(ip, Code::kHeaderSize - kHeapObjectTag));
-    Call(ip);
-    return;
-  } else if (!isolate()->serializer_enabled()) {
-    int builtin_index = Builtins::kNoBuiltinId;
-    if (isolate()->builtins()->IsBuiltinHandle(code, &builtin_index) &&
-        Builtins::IsIsolateIndependent(builtin_index)) {
-      // Inline the trampoline.
-      DCHECK(Builtins::IsBuiltinId(builtin_index));
-      EmbeddedData d = EmbeddedData::FromBlob();
-      Address entry = d.InstructionStartOfBuiltin(builtin_index);
+  if (FLAG_embedded_builtins) {
+    if (root_array_available_ && options().isolate_independent_code) {
       // Use ip directly instead of using UseScratchRegisterScope, as we do not
       // preserve scratch registers across calls.
-      // RelocInfo is only necessary if generating code for the snapshot.
-      // Otherwise, the target address is immortal-immovable and never needs to
-      // be fixed up by GC (or deserialization).
-      mov(ip, Operand(entry, RelocInfo::NONE));
+      IndirectLoadConstant(ip, code);
+      la(ip, MemOperand(ip, Code::kHeaderSize - kHeapObjectTag));
       Call(ip);
       return;
+    } else if (options().inline_offheap_trampolines) {
+      int builtin_index = Builtins::kNoBuiltinId;
+      if (isolate()->builtins()->IsBuiltinHandle(code, &builtin_index) &&
+          Builtins::IsIsolateIndependent(builtin_index)) {
+        // Inline the trampoline.
+        DCHECK(Builtins::IsBuiltinId(builtin_index));
+        EmbeddedData d = EmbeddedData::FromBlob();
+        Address entry = d.InstructionStartOfBuiltin(builtin_index);
+        // Use ip directly instead of using UseScratchRegisterScope, as we do
+        // not preserve scratch registers across calls.
+        mov(ip, Operand(entry, RelocInfo::OFF_HEAP_TARGET));
+        Call(ip);
+        return;
+      }
     }
   }
-#endif  // V8_EMBEDDED_BUILTINS
   call(code, rmode);
 }
 
@@ -353,22 +331,22 @@ void TurboAssembler::Push(Smi* smi) {
 }
 
 void TurboAssembler::Move(Register dst, Handle<HeapObject> value) {
-#ifdef V8_EMBEDDED_BUILTINS
-  if (root_array_available_ && isolate()->ShouldLoadConstantsFromRootList()) {
-    IndirectLoadConstant(dst, value);
-    return;
+  if (FLAG_embedded_builtins) {
+    if (root_array_available_ && options().isolate_independent_code) {
+      IndirectLoadConstant(dst, value);
+      return;
+    }
   }
-#endif  // V8_EMBEDDED_BUILTINS
   mov(dst, Operand(value));
 }
 
 void TurboAssembler::Move(Register dst, ExternalReference reference) {
-#ifdef V8_EMBEDDED_BUILTINS
-  if (root_array_available_ && isolate()->ShouldLoadConstantsFromRootList()) {
-    IndirectLoadExternalReference(dst, reference);
-    return;
+  if (FLAG_embedded_builtins) {
+    if (root_array_available_ && options().isolate_independent_code) {
+      IndirectLoadExternalReference(dst, reference);
+      return;
+    }
   }
-#endif  // V8_EMBEDDED_BUILTINS
   mov(dst, Operand(reference));
 }
 
@@ -484,7 +462,7 @@ void TurboAssembler::MultiPopDoubles(RegList dregs, Register location) {
 
 void TurboAssembler::LoadRoot(Register destination, Heap::RootListIndex index,
                               Condition) {
-  LoadP(destination, MemOperand(kRootRegister, index << kPointerSizeLog2), r0);
+  LoadP(destination, MemOperand(kRootRegister, RootRegisterOffset(index)), r0);
 }
 
 void MacroAssembler::RecordWriteField(Register object, int offset,
@@ -1557,7 +1535,7 @@ void MacroAssembler::CompareInstanceType(Register map, Register type_reg,
 }
 
 void MacroAssembler::CompareRoot(Register obj, Heap::RootListIndex index) {
-  CmpP(obj, MemOperand(kRootRegister, index << kPointerSizeLog2));
+  CmpP(obj, MemOperand(kRootRegister, RootRegisterOffset(index)));
 }
 
 void MacroAssembler::CallStub(CodeStub* stub, Condition cond) {

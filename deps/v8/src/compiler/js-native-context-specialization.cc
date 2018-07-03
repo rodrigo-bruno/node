@@ -65,8 +65,9 @@ JSNativeContextSpecialization::JSNativeContextSpecialization(
       jsgraph_(jsgraph),
       js_heap_broker_(js_heap_broker),
       flags_(flags),
-      global_object_(native_context->global_object()),
-      global_proxy_(JSGlobalProxy::cast(native_context->global_proxy())),
+      global_object_(native_context->global_object(), jsgraph->isolate()),
+      global_proxy_(JSGlobalProxy::cast(native_context->global_proxy()),
+                    jsgraph->isolate()),
       native_context_(native_context),
       dependencies_(dependencies),
       zone_(zone),
@@ -153,13 +154,11 @@ Reduction JSNativeContextSpecialization::ReduceJSGetSuperConstructor(
   // We can constant-fold the super constructor access if the
   // {function}s map is stable, i.e. we can use a code dependency
   // to guard against [[Prototype]] changes of {function}.
-  if (function_map->is_stable()) {
-    Node* value = jsgraph()->Constant(function_prototype);
+  if (function_map->is_stable() && function_prototype->IsConstructor()) {
     dependencies()->AssumeMapStable(function_map);
-    if (function_prototype->IsConstructor()) {
-      ReplaceWithValue(node, value);
-      return Replace(value);
-    }
+    Node* value = jsgraph()->Constant(function_prototype);
+    ReplaceWithValue(node, value);
+    return Replace(value);
   }
 
   return NoChange();
@@ -209,7 +208,7 @@ Reduction JSNativeContextSpecialization::ReduceJSInstanceOf(Node* node) {
       // Determine actual holder and perform prototype chain checks.
       Handle<JSObject> holder;
       if (access_info.holder().ToHandle(&holder)) {
-        access_builder.AssumePrototypesStable(
+        dependencies()->AssumePrototypesStable(
             native_context().object<Context>(), access_info.receiver_maps(),
             holder);
       }
@@ -235,9 +234,9 @@ Reduction JSNativeContextSpecialization::ReduceJSInstanceOf(Node* node) {
     // Determine actual holder and perform prototype chain checks.
     Handle<JSObject> holder;
     if (access_info.holder().ToHandle(&holder)) {
-      access_builder.AssumePrototypesStable(native_context().object<Context>(),
-                                            access_info.receiver_maps(),
-                                            holder);
+      dependencies()->AssumePrototypesStable(native_context().object<Context>(),
+                                             access_info.receiver_maps(),
+                                             holder);
     } else {
       holder = receiver;
     }
@@ -391,7 +390,8 @@ Reduction JSNativeContextSpecialization::ReduceJSOrdinaryHasInstance(
     // invocation of the instanceof operator again.
     // ES6 section 7.3.19 OrdinaryHasInstance (C, O) step 2.
     Handle<JSBoundFunction> function = Handle<JSBoundFunction>::cast(m.Value());
-    Handle<JSReceiver> bound_target_function(function->bound_target_function());
+    Handle<JSReceiver> bound_target_function(function->bound_target_function(),
+                                             isolate());
     NodeProperties::ReplaceValueInput(node, object, 0);
     NodeProperties::ReplaceValueInput(
         node, jsgraph()->HeapConstant(bound_target_function), 1);
@@ -502,8 +502,8 @@ Reduction JSNativeContextSpecialization::ReduceJSResolvePromise(Node* node) {
   // Add proper dependencies on the {resolution}s [[Prototype]]s.
   Handle<JSObject> holder;
   if (access_info.holder().ToHandle(&holder)) {
-    access_builder.AssumePrototypesStable(native_context().object<Context>(),
-                                          access_info.receiver_maps(), holder);
+    dependencies()->AssumePrototypesStable(native_context().object<Context>(),
+                                           access_info.receiver_maps(), holder);
   }
 
   // Simply fulfill the {promise} with the {resolution}.
@@ -741,9 +741,8 @@ Reduction JSNativeContextSpecialization::ReduceJSLoadGlobal(Node* node) {
       native_context().script_context_table(js_heap_broker()).lookup(name);
   if (result) {
     ObjectRef contents = result->context.get(js_heap_broker(), result->index);
-    if (contents.IsHeapObject() &&
-        contents.AsHeapObject().oddball_type(js_heap_broker()) ==
-            HeapObjectType::kHole) {
+    OddballType oddball_type = contents.oddball_type(js_heap_broker());
+    if (oddball_type == OddballType::kHole) {
       return NoChange();
     }
     Node* context = jsgraph()->Constant(js_heap_broker(), result->context);
@@ -771,12 +770,10 @@ Reduction JSNativeContextSpecialization::ReduceJSStoreGlobal(Node* node) {
       native_context().script_context_table(js_heap_broker()).lookup(name);
   if (result) {
     ObjectRef contents = result->context.get(js_heap_broker(), result->index);
-    if (contents.IsHeapObject() &&
-        contents.AsHeapObject().oddball_type(js_heap_broker()) ==
-            HeapObjectType::kHole) {
+    OddballType oddball_type = contents.oddball_type(js_heap_broker());
+    if (oddball_type == OddballType::kHole || result->immutable) {
       return NoChange();
     }
-    if (result->immutable) return NoChange();
     Node* context = jsgraph()->Constant(js_heap_broker(), result->context);
     effect = graph()->NewNode(javascript()->StoreContext(0, result->index),
                               value, context, effect, control);
@@ -1769,8 +1766,7 @@ Node* JSNativeContextSpecialization::InlineApiCall(
       graph()->zone(), call_interface_descriptor,
       call_interface_descriptor.GetStackParameterCount() + argc +
           1 /* implicit receiver */,
-      CallDescriptor::kNeedsFrameState, Operator::kNoProperties,
-      MachineType::AnyTagged(), 1, Linkage::kNoContext);
+      CallDescriptor::kNeedsFrameState);
 
   Node* data = jsgraph()->Constant(call_data_object);
   ApiFunction function(v8::ToCData<Address>(call_handler_info->callback()));
@@ -1806,8 +1802,8 @@ JSNativeContextSpecialization::BuildPropertyLoad(
   Handle<JSObject> holder;
   PropertyAccessBuilder access_builder(jsgraph(), dependencies());
   if (access_info.holder().ToHandle(&holder)) {
-    access_builder.AssumePrototypesStable(native_context().object<Context>(),
-                                          access_info.receiver_maps(), holder);
+    dependencies()->AssumePrototypesStable(native_context().object<Context>(),
+                                           access_info.receiver_maps(), holder);
   }
 
   // Generate the actual property access.
@@ -1863,8 +1859,8 @@ JSNativeContextSpecialization::BuildPropertyStore(
   PropertyAccessBuilder access_builder(jsgraph(), dependencies());
   if (access_info.holder().ToHandle(&holder)) {
     DCHECK_NE(AccessMode::kStoreInLiteral, access_mode);
-    access_builder.AssumePrototypesStable(native_context().object<Context>(),
-                                          access_info.receiver_maps(), holder);
+    dependencies()->AssumePrototypesStable(native_context().object<Context>(),
+                                           access_info.receiver_maps(), holder);
   }
 
   DCHECK(!access_info.IsNotFound());
@@ -1917,7 +1913,7 @@ JSNativeContextSpecialization::BuildPropertyStore(
             !FLAG_unbox_double_fields) {
           if (access_info.HasTransitionMap()) {
             // Allocate a MutableHeapNumber for the new property.
-            AllocationBuilder a(jsgraph(), effect, control);
+            AllocationBuilder a(jsgraph(), js_heap_broker(), effect, control);
             a.Allocate(HeapNumber::kSize, NOT_TENURED, Type::OtherInternal());
             a.Store(AccessBuilder::ForMap(),
                     factory()->mutable_heap_number_map());
@@ -2080,7 +2076,8 @@ Reduction JSNativeContextSpecialization::ReduceJSStoreDataPropertyInLiteral(
   }
 
   Handle<Map> receiver_map(map, isolate());
-  if (!Map::TryUpdate(receiver_map).ToHandle(&receiver_map)) return NoChange();
+  if (!Map::TryUpdate(isolate(), receiver_map).ToHandle(&receiver_map))
+    return NoChange();
 
   Handle<Name> cached_name = handle(
       Name::cast(nexus.GetFeedbackExtra()->ToStrongHeapObject()), isolate());
@@ -2772,7 +2769,7 @@ Node* JSNativeContextSpecialization::BuildExtendPropertiesBackingStore(
                        new_length_and_hash, effect, control);
 
   // Allocate and initialize the new properties.
-  AllocationBuilder a(jsgraph(), effect, control);
+  AllocationBuilder a(jsgraph(), js_heap_broker(), effect, control);
   a.Allocate(PropertyArray::SizeFor(new_length), NOT_TENURED,
              Type::OtherInternal());
   a.Store(AccessBuilder::ForMap(), jsgraph()->PropertyArrayMapConstant());
@@ -2844,11 +2841,12 @@ bool JSNativeContextSpecialization::ExtractReceiverMaps(
     Handle<Map> receiver_map;
     if (InferReceiverRootMap(receiver).ToHandle(&receiver_map)) {
       DCHECK(!receiver_map->is_abandoned_prototype_map());
+      Isolate* isolate = this->isolate();
       receiver_maps->erase(
           std::remove_if(receiver_maps->begin(), receiver_maps->end(),
-                         [receiver_map](const Handle<Map>& map) {
+                         [receiver_map, isolate](const Handle<Map>& map) {
                            return map->is_abandoned_prototype_map() ||
-                                  map->FindRootMap() != *receiver_map;
+                                  map->FindRootMap(isolate) != *receiver_map;
                          }),
           receiver_maps->end());
     }
@@ -2886,7 +2884,7 @@ MaybeHandle<Map> JSNativeContextSpecialization::InferReceiverRootMap(
     Node* receiver) {
   HeapObjectMatcher m(receiver);
   if (m.HasValue()) {
-    return handle(m.Value()->map()->FindRootMap(), isolate());
+    return handle(m.Value()->map()->FindRootMap(isolate()), isolate());
   } else if (m.IsJSCreate()) {
     HeapObjectMatcher mtarget(m.InputAt(0));
     HeapObjectMatcher mnewtarget(m.InputAt(1));
@@ -2896,7 +2894,7 @@ MaybeHandle<Map> JSNativeContextSpecialization::InferReceiverRootMap(
       if (constructor->has_initial_map()) {
         Handle<Map> initial_map(constructor->initial_map(), isolate());
         if (initial_map->constructor_or_backpointer() == *mnewtarget.Value()) {
-          DCHECK_EQ(*initial_map, initial_map->FindRootMap());
+          DCHECK_EQ(*initial_map, initial_map->FindRootMap(isolate()));
           return initial_map;
         }
       }

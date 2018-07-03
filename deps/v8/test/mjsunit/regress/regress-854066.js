@@ -3,7 +3,7 @@
 // found in the LICENSE file.
 
 oobArray = [];
-for (let i = 0; i < 1024 * 1024; ++i) {
+for (let i = 0; i < 1e5; ++i) {
   oobArray[i] = 1.1;
 }
 floatArray = new Float64Array(oobArray.length);

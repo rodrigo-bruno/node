@@ -27,9 +27,10 @@ namespace internal {
 // -------------------------------------------------------------------------
 // MacroAssembler implementation.
 
-MacroAssembler::MacroAssembler(Isolate* isolate, void* buffer, int size,
+MacroAssembler::MacroAssembler(Isolate* isolate, const Options& options,
+                               void* buffer, int size,
                                CodeObjectRequired create_code_object)
-    : TurboAssembler(isolate, buffer, size, create_code_object) {
+    : TurboAssembler(isolate, options, buffer, size, create_code_object) {
   if (create_code_object == CodeObjectRequired::kYes) {
     // Unlike TurboAssembler, which can be used off the main thread and may not
     // allocate, macro assembler creates its own copy of the self-reference
@@ -58,7 +59,6 @@ void TurboAssembler::LoadRoot(Register destination, Heap::RootListIndex index) {
                                         times_pointer_size,
                                         roots_array_start));
 }
-
 
 void MacroAssembler::CompareRoot(Register with,
                                  Register scratch,
@@ -501,17 +501,6 @@ void MacroAssembler::AssertSmi(Register object) {
   }
 }
 
-void MacroAssembler::AssertFixedArray(Register object) {
-  if (emit_debug_code()) {
-    test(object, Immediate(kSmiTagMask));
-    Check(not_equal, AbortReason::kOperandIsASmiAndNotAFixedArray);
-    Push(object);
-    CmpObjectType(object, FIXED_ARRAY_TYPE, object);
-    Pop(object);
-    Check(equal, AbortReason::kOperandIsNotAFixedArray);
-  }
-}
-
 void MacroAssembler::AssertConstructor(Register object) {
   if (emit_debug_code()) {
     test(object, Immediate(kSmiTagMask));
@@ -624,6 +613,30 @@ void TurboAssembler::LeaveFrame(StackFrame::Type type) {
   }
   leave();
 }
+
+#ifdef V8_OS_WIN
+void TurboAssembler::AllocateStackFrame(Register bytes_scratch) {
+  // In windows, we cannot increment the stack size by more than one page
+  // (minimum page size is 4KB) without accessing at least one byte on the
+  // page. Check this:
+  // https://msdn.microsoft.com/en-us/library/aa227153(v=vs.60).aspx.
+  constexpr int kPageSize = 4 * 1024;
+  Label check_offset;
+  Label touch_next_page;
+  jmp(&check_offset);
+  bind(&touch_next_page);
+  sub(esp, Immediate(kPageSize));
+  // Just to touch the page, before we increment further.
+  mov(Operand(esp, 0), Immediate(0));
+  sub(bytes_scratch, Immediate(kPageSize));
+
+  bind(&check_offset);
+  cmp(bytes_scratch, kPageSize);
+  j(greater, &touch_next_page);
+
+  sub(esp, bytes_scratch);
+}
+#endif
 
 void MacroAssembler::EnterBuiltinFrame(Register context, Register target,
                                        Register argc) {
@@ -1329,20 +1342,6 @@ void TurboAssembler::Psignd(XMMRegister dst, Operand src) {
   UNREACHABLE();
 }
 
-void TurboAssembler::Ptest(XMMRegister dst, Operand src) {
-  if (CpuFeatures::IsSupported(AVX)) {
-    CpuFeatureScope scope(this, AVX);
-    vptest(dst, src);
-    return;
-  }
-  if (CpuFeatures::IsSupported(SSE4_1)) {
-    CpuFeatureScope sse_scope(this, SSE4_1);
-    ptest(dst, src);
-    return;
-  }
-  UNREACHABLE();
-}
-
 void TurboAssembler::Pshufb(XMMRegister dst, Operand src) {
   if (CpuFeatures::IsSupported(AVX)) {
     CpuFeatureScope scope(this, AVX);
@@ -1366,6 +1365,20 @@ void TurboAssembler::Pblendw(XMMRegister dst, Operand src, uint8_t imm8) {
   if (CpuFeatures::IsSupported(SSE4_1)) {
     CpuFeatureScope sse_scope(this, SSE4_1);
     pblendw(dst, src, imm8);
+    return;
+  }
+  UNREACHABLE();
+}
+
+void TurboAssembler::Palignr(XMMRegister dst, Operand src, uint8_t imm8) {
+  if (CpuFeatures::IsSupported(AVX)) {
+    CpuFeatureScope scope(this, AVX);
+    vpalignr(dst, dst, src, imm8);
+    return;
+  }
+  if (CpuFeatures::IsSupported(SSSE3)) {
+    CpuFeatureScope sse_scope(this, SSSE3);
+    palignr(dst, src, imm8);
     return;
   }
   UNREACHABLE();

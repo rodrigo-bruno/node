@@ -174,8 +174,8 @@ module test {
   }
 
   macro TestVariableRedeclaration(context : Context) : Boolean {
-    let var1 : Number = 42 == 0 ? 0 : 1;
-    let var2 : Number = 42 == 0 ? 1 : 0;
+    let var1 : Number = from_constexpr<bool>(42 == 0) ? 0 : 1;
+    let var2 : Number = from_constexpr<bool>(42 == 0) ? 1 : 0;
     return True;
   }
 
@@ -218,5 +218,9 @@ module test {
     let someVeryLongVariableNameThatWillCauseLineBreaks: Smi = 5;
     check(someVeryLongVariableNameThatWillCauseLineBreaks > 0
            && someVeryLongVariableNameThatWillCauseLineBreaks < 10);
+  }
+
+  macro TestNewlineInString() {
+    Print('Hello, World!\n');
   }
 }

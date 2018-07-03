@@ -277,7 +277,7 @@ bool AccessInfoFactory::ComputeElementAccessInfos(
   MapHandles possible_transition_targets;
   possible_transition_targets.reserve(maps.size());
   for (Handle<Map> map : maps) {
-    if (Map::TryUpdate(map).ToHandle(&map)) {
+    if (Map::TryUpdate(isolate(), map).ToHandle(&map)) {
       if (CanInlineElementAccess(map) &&
           IsFastElementsKind(map->elements_kind()) &&
           GetInitialFastElementsKind() != map->elements_kind()) {
@@ -291,12 +291,12 @@ bool AccessInfoFactory::ComputeElementAccessInfos(
   receiver_maps.reserve(maps.size());
   MapTransitionList transitions(maps.size());
   for (Handle<Map> map : maps) {
-    if (Map::TryUpdate(map).ToHandle(&map)) {
+    if (Map::TryUpdate(isolate(), map).ToHandle(&map)) {
       // Don't generate elements kind transitions from stable maps.
-      Map* transition_target = map->is_stable()
-                                   ? nullptr
-                                   : map->FindElementsKindTransitionedMap(
-                                         possible_transition_targets);
+      Map* transition_target =
+          map->is_stable() ? nullptr
+                           : map->FindElementsKindTransitionedMap(
+                                 isolate(), possible_transition_targets);
       if (transition_target == nullptr) {
         receiver_maps.push_back(map);
       } else {
@@ -349,7 +349,7 @@ bool AccessInfoFactory::ComputePropertyAccessInfo(
   do {
     // Lookup the named property on the {map}.
     Handle<DescriptorArray> descriptors(map->instance_descriptors(), isolate());
-    int const number = descriptors->SearchWithCache(isolate(), *name, *map);
+    int const number = descriptors->Search(*name, *map);
     if (number != DescriptorArray::kNotFound) {
       PropertyDetails const details = descriptors->GetDetails(number);
       if (access_mode == AccessMode::kStore ||
@@ -396,8 +396,8 @@ bool AccessInfoFactory::ComputePropertyAccessInfo(
               // about the contents now.
             } else if (descriptors_field_type->IsClass()) {
               // Add proper code dependencies in case of stable field map(s).
-              Handle<Map> field_owner_map(map->FindFieldOwner(number),
-                                          isolate());
+              Handle<Map> field_owner_map(
+                  map->FindFieldOwner(isolate(), number), isolate());
               dependencies()->AssumeFieldOwner(field_owner_map);
 
               // Remember the field map, and try to infer a useful type.
@@ -456,7 +456,7 @@ bool AccessInfoFactory::ComputePropertyAccessInfo(
                   : Handle<AccessorPair>::cast(accessors)->setter(),
               isolate());
           if (!accessor->IsJSFunction()) {
-            CallOptimization optimization(accessor);
+            CallOptimization optimization(isolate(), accessor);
             if (!optimization.is_simple_api_call()) return false;
             if (optimization.IsCrossContextLazyAccessorPair(*native_context_,
                                                             *map)) {
@@ -561,7 +561,7 @@ bool AccessInfoFactory::ComputePropertyAccessInfos(
     MapHandles const& maps, Handle<Name> name, AccessMode access_mode,
     ZoneVector<PropertyAccessInfo>* access_infos) {
   for (Handle<Map> map : maps) {
-    if (Map::TryUpdate(map).ToHandle(&map)) {
+    if (Map::TryUpdate(isolate(), map).ToHandle(&map)) {
       PropertyAccessInfo access_info;
       if (!ComputePropertyAccessInfo(map, name, access_mode, &access_info)) {
         return false;
@@ -629,13 +629,13 @@ bool AccessInfoFactory::LookupSpecialFieldAccessor(
     Type field_type = Type::NonInternal();
     MachineRepresentation field_representation = MachineRepresentation::kTagged;
     if (map->IsStringMap()) {
-      DCHECK(Name::Equals(factory()->length_string(), name));
+      DCHECK(Name::Equals(isolate(), factory()->length_string(), name));
       // The String::length property is always a smi in the range
       // [0, String::kMaxLength].
       field_type = type_cache_.kStringLengthType;
       field_representation = MachineRepresentation::kTaggedSigned;
     } else if (map->IsJSArrayMap()) {
-      DCHECK(Name::Equals(factory()->length_string(), name));
+      DCHECK(Name::Equals(isolate(), factory()->length_string(), name));
       // The JSArray::length property is a smi in the range
       // [0, FixedDoubleArray::kMaxLength] in case of fast double
       // elements, a smi in the range [0, FixedArray::kMaxLength]
@@ -669,7 +669,7 @@ bool AccessInfoFactory::LookupTransition(Handle<Map> map, Handle<Name> name,
       TransitionsAccessor(isolate(), map).SearchTransition(*name, kData, NONE);
   if (transition == nullptr) return false;
 
-  Handle<Map> transition_map(transition);
+  Handle<Map> transition_map(transition, isolate());
   int const number = transition_map->LastAdded();
   PropertyDetails const details =
       transition_map->instance_descriptors()->GetDetails(number);
@@ -702,8 +702,8 @@ bool AccessInfoFactory::LookupTransition(Handle<Map> map, Handle<Name> name,
       return false;
     } else if (descriptors_field_type->IsClass()) {
       // Add proper code dependencies in case of stable field map(s).
-      Handle<Map> field_owner_map(transition_map->FindFieldOwner(number),
-                                  isolate());
+      Handle<Map> field_owner_map(
+          transition_map->FindFieldOwner(isolate(), number), isolate());
       dependencies()->AssumeFieldOwner(field_owner_map);
 
       // Remember the field map, and try to infer a useful type.

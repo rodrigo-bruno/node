@@ -57,6 +57,11 @@ class JSCallReducerTest : public TypedGraphTest {
     i::FLAG_lazy_handler_deserialization = old_flag_lazy_handler_;
   }
 
+  // Ensure uncommitted compilation dependencies are discarded after each test.
+  // This prevents use-after-free accesses through invalidation of compilation
+  // dependencies.
+  void TearDown() override { deps_.Rollback(); }
+
   Node* GlobalFunction(const char* name) {
     Handle<JSFunction> f = Handle<JSFunction>::cast(
         Object::GetProperty(
@@ -139,7 +144,8 @@ class JSCallReducerTest : public TypedGraphTest {
 };
 
 TEST_F(JSCallReducerTest, PromiseConstructorNoArgs) {
-  Node* promise = HeapConstant(handle(native_context()->promise_function()));
+  Node* promise =
+      HeapConstant(handle(native_context()->promise_function(), isolate()));
   Node* effect = graph()->start();
   Node* control = graph()->start();
   Node* context = UndefinedConstant();
@@ -155,8 +161,10 @@ TEST_F(JSCallReducerTest, PromiseConstructorNoArgs) {
 }
 
 TEST_F(JSCallReducerTest, PromiseConstructorSubclass) {
-  Node* promise = HeapConstant(handle(native_context()->promise_function()));
-  Node* new_target = HeapConstant(handle(native_context()->array_function()));
+  Node* promise =
+      HeapConstant(handle(native_context()->promise_function(), isolate()));
+  Node* new_target =
+      HeapConstant(handle(native_context()->array_function(), isolate()));
   Node* effect = graph()->start();
   Node* control = graph()->start();
   Node* context = UndefinedConstant();
@@ -173,7 +181,8 @@ TEST_F(JSCallReducerTest, PromiseConstructorSubclass) {
 }
 
 TEST_F(JSCallReducerTest, PromiseConstructorBasic) {
-  Node* promise = HeapConstant(handle(native_context()->promise_function()));
+  Node* promise =
+      HeapConstant(handle(native_context()->promise_function(), isolate()));
   Node* effect = graph()->start();
   Node* control = graph()->start();
   Node* context = UndefinedConstant();
@@ -196,7 +205,8 @@ TEST_F(JSCallReducerTest, PromiseConstructorBasic) {
 // Exactly the same as PromiseConstructorBasic which expects a reduction,
 // except that we invalidate the protector cell.
 TEST_F(JSCallReducerTest, PromiseConstructorWithHook) {
-  Node* promise = HeapConstant(handle(native_context()->promise_function()));
+  Node* promise =
+      HeapConstant(handle(native_context()->promise_function(), isolate()));
   Node* effect = graph()->start();
   Node* control = graph()->start();
   Node* context = UndefinedConstant();

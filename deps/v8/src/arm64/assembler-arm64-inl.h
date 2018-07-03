@@ -563,7 +563,7 @@ Address Assembler::runtime_entry_at(Address pc) {
     return Assembler::target_address_at(pc, 0 /* unused */);
   } else {
     DCHECK(instr->IsBranchAndLink() || instr->IsUnconditionalBranch());
-    return instr->ImmPCOffset() + isolate_data().code_range_start;
+    return instr->ImmPCOffset() + options().code_range_start;
   }
 }
 
@@ -741,13 +741,6 @@ Address RelocInfo::target_internal_reference() {
 Address RelocInfo::target_internal_reference_address() {
   DCHECK(rmode_ == INTERNAL_REFERENCE);
   return pc_;
-}
-
-void RelocInfo::set_wasm_code_table_entry(Address target,
-                                          ICacheFlushMode icache_flush_mode) {
-  DCHECK(rmode_ == RelocInfo::WASM_CODE_TABLE_ENTRY);
-  Assembler::set_target_address_at(pc_, constant_pool_, target,
-                                   icache_flush_mode);
 }
 
 Address RelocInfo::target_runtime_entry(Assembler* origin) {

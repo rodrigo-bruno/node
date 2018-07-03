@@ -31,8 +31,8 @@ namespace internal {
   TFC(RecordWrite, RecordWrite, 1)                                             \
                                                                                \
   /* Adaptors for CPP/API builtin */                                           \
-  ASM(AdaptorWithExitFrame)                                                    \
-  ASM(AdaptorWithBuiltinExitFrame)                                             \
+  TFC(AdaptorWithExitFrame, CppBuiltinAdaptor, 1)                              \
+  TFC(AdaptorWithBuiltinExitFrame, CppBuiltinAdaptor, 1)                       \
                                                                                \
   /* Calls */                                                                  \
   ASM(ArgumentsAdaptorTrampoline)                                              \
@@ -223,8 +223,8 @@ namespace internal {
   TFS(DeleteProperty, kObject, kKey, kLanguageMode)                            \
                                                                                \
   /* Abort */                                                                  \
-  ASM(Abort)                                                                   \
-  TFC(AbortJS, AbortJS, 1)                                                     \
+  TFC(Abort, Abort, 1)                                                         \
+  TFC(AbortJS, Abort, 1)                                                       \
                                                                                \
   /* Built-in functions for Javascript */                                      \
   /* Special internal builtins */                                              \
@@ -420,7 +420,11 @@ namespace internal {
   /* AsyncFunction */                                                          \
   TFJ(AsyncFunctionAwaitCaught, 3, kReceiver, kGenerator, kAwaited,            \
       kOuterPromise)                                                           \
+  TFJ(AsyncFunctionAwaitCaughtOptimized, 3, kReceiver, kGenerator, kAwaited,   \
+      kOuterPromise)                                                           \
   TFJ(AsyncFunctionAwaitUncaught, 3, kReceiver, kGenerator, kAwaited,          \
+      kOuterPromise)                                                           \
+  TFJ(AsyncFunctionAwaitUncaughtOptimized, 3, kReceiver, kGenerator, kAwaited, \
       kOuterPromise)                                                           \
   TFJ(AsyncFunctionAwaitRejectClosure, 1, kReceiver, kSentError)               \
   TFJ(AsyncFunctionAwaitResolveClosure, 1, kReceiver, kSentValue)              \
@@ -479,11 +483,8 @@ namespace internal {
   CPP(ConsoleCountReset)                                                       \
   CPP(ConsoleAssert)                                                           \
   TFJ(FastConsoleAssert, SharedFunctionInfo::kDontAdaptArgumentsSentinel)      \
-  CPP(ConsoleMarkTimeline)                                                     \
   CPP(ConsoleProfile)                                                          \
   CPP(ConsoleProfileEnd)                                                       \
-  CPP(ConsoleTimeline)                                                         \
-  CPP(ConsoleTimelineEnd)                                                      \
   CPP(ConsoleTime)                                                             \
   CPP(ConsoleTimeEnd)                                                          \
   CPP(ConsoleTimeStamp)                                                        \
@@ -794,7 +795,7 @@ namespace internal {
   TFJ(ObjectGetOwnPropertyDescriptor,                                          \
       SharedFunctionInfo::kDontAdaptArgumentsSentinel)                         \
   CPP(ObjectGetOwnPropertyDescriptors)                                         \
-  CPP(ObjectGetOwnPropertyNames)                                               \
+  TFJ(ObjectGetOwnPropertyNames, 1, kReceiver, kObject)                        \
   CPP(ObjectGetOwnPropertySymbols)                                             \
   CPP(ObjectGetPrototypeOf)                                                    \
   CPP(ObjectSetPrototypeOf)                                                    \
@@ -1120,7 +1121,6 @@ namespace internal {
                                                                                \
   /* TypedArray */                                                             \
   TFS(IterableToList, kIterable, kIteratorFn)                                  \
-  TFS(IterableToListUnsafe, kIterable, kIteratorFn)                            \
   TFS(TypedArrayInitialize, kHolder, kLength, kElementSize, kInitialize,       \
       kBufferConstructor)                                                      \
   TFS(TypedArrayInitializeWithBuffer, kHolder, kLength, kBuffer, kElementSize, \
@@ -1201,8 +1201,9 @@ namespace internal {
   TFC(WasmAllocateHeapNumber, AllocateHeapNumber, 1)                           \
   TFC(WasmArgumentsAdaptor, ArgumentAdaptor, 1)                                \
   TFC(WasmCallJavaScript, CallTrampoline, 1)                                   \
+  TFC(WasmGrowMemory, WasmGrowMemory, 1)                                       \
+  TFC(WasmStackGuard, NoContext, 1)                                            \
   TFC(WasmToNumber, TypeConversion, 1)                                         \
-  TFS(WasmStackGuard)                                                          \
   TFS(ThrowWasmTrapUnreachable)                                                \
   TFS(ThrowWasmTrapMemOutOfBounds)                                             \
   TFS(ThrowWasmTrapDivByZero)                                                  \
@@ -1271,10 +1272,13 @@ namespace internal {
   /* See tc39.github.io/proposal-async-iteration/ */                           \
   /* #sec-%asyncfromsynciteratorprototype%-object) */                          \
   TFJ(AsyncFromSyncIteratorPrototypeNext, 1, kReceiver, kValue)                \
+  TFJ(AsyncFromSyncIteratorPrototypeNextOptimized, 1, kReceiver, kValue)       \
   /* #sec-%asyncfromsynciteratorprototype%.throw */                            \
   TFJ(AsyncFromSyncIteratorPrototypeThrow, 1, kReceiver, kReason)              \
+  TFJ(AsyncFromSyncIteratorPrototypeThrowOptimized, 1, kReceiver, kReason)     \
   /* #sec-%asyncfromsynciteratorprototype%.return */                           \
   TFJ(AsyncFromSyncIteratorPrototypeReturn, 1, kReceiver, kValue)              \
+  TFJ(AsyncFromSyncIteratorPrototypeReturnOptimized, 1, kReceiver, kValue)     \
   /* #sec-async-iterator-value-unwrap-functions */                             \
   TFJ(AsyncIteratorValueUnwrap, 1, kReceiver, kValue)                          \
                                                                                \
@@ -1355,9 +1359,14 @@ namespace internal {
 #define BUILTIN_PROMISE_REJECTION_PREDICTION_LIST(V) \
   V(AsyncFromSyncIteratorPrototypeNext)              \
   V(AsyncFromSyncIteratorPrototypeReturn)            \
+  V(AsyncFromSyncIteratorPrototypeNextOptimized)     \
+  V(AsyncFromSyncIteratorPrototypeThrowOptimized)    \
+  V(AsyncFromSyncIteratorPrototypeReturnOptimized)   \
   V(AsyncFromSyncIteratorPrototypeThrow)             \
   V(AsyncFunctionAwaitCaught)                        \
+  V(AsyncFunctionAwaitCaughtOptimized)               \
   V(AsyncFunctionAwaitUncaught)                      \
+  V(AsyncFunctionAwaitUncaughtOptimized)             \
   V(AsyncGeneratorResolve)                           \
   V(AsyncGeneratorAwaitCaught)                       \
   V(AsyncGeneratorAwaitUncaught)                     \

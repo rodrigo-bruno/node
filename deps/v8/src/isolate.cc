@@ -80,7 +80,6 @@ namespace internal {
 
 base::Atomic32 ThreadId::highest_thread_id_ = 0;
 
-#ifdef V8_EMBEDDED_BUILTINS
 extern const uint8_t* DefaultEmbeddedBlob();
 extern uint32_t DefaultEmbeddedBlobSize();
 
@@ -131,7 +130,6 @@ uint32_t Isolate::CurrentEmbeddedBlobSize() {
   return current_embedded_blob_size_.load(
       std::memory_order::memory_order_relaxed);
 }
-#endif  // V8_EMBEDDED_BUILTINS
 
 int ThreadId::AllocateThreadId() {
   int new_id = base::Relaxed_AtomicIncrement(&highest_thread_id_, 1);
@@ -779,7 +777,7 @@ class CaptureStackTraceHelper {
       int entry = cache->FindEntry(code_offset);
       if (entry != NumberDictionary::kNotFound) {
         Handle<StackFrameInfo> frame(
-            StackFrameInfo::cast(cache->ValueAt(entry)));
+            StackFrameInfo::cast(cache->ValueAt(entry)), isolate_);
         return frame;
       }
     }
@@ -1129,7 +1127,8 @@ void ReportBootstrappingException(Handle<Object> exception,
   // Since comments and empty lines have been stripped from the source of
   // builtins, print the actual source here so that line numbers match.
   if (location->script()->source()->IsString()) {
-    Handle<String> src(String::cast(location->script()->source()));
+    Handle<String> src(String::cast(location->script()->source()),
+                       location->script()->GetIsolate());
     PrintF("Failing script:");
     int len = src->length();
     if (len == 0) {
@@ -1197,7 +1196,7 @@ Object* Isolate::Throw(Object* raw_exception, MessageLocation* location) {
         printf(", line %d\n", script->GetLineNumber(location->start_pos()) + 1);
       }
     }
-    raw_exception->Print();
+    raw_exception->Print(this);
     printf("Stack Trace:\n");
     PrintStack(stdout);
     printf("=========================================================\n");
@@ -1586,7 +1585,7 @@ Isolate::CatchType Isolate::PredictExceptionCatcher() {
       } break;
 
       case StackFrame::STUB: {
-        Handle<Code> code(frame->LookupCode());
+        Handle<Code> code(frame->LookupCode(), this);
         if (!code->IsCode() || code->kind() != Code::BUILTIN ||
             !code->handler_table_offset() || !code->is_turbofanned()) {
           break;
@@ -1597,7 +1596,7 @@ Isolate::CatchType Isolate::PredictExceptionCatcher() {
       } break;
 
       case StackFrame::JAVA_SCRIPT_BUILTIN_CONTINUATION_WITH_CATCH: {
-        Handle<Code> code(frame->LookupCode());
+        Handle<Code> code(frame->LookupCode(), this);
         CatchType prediction = ToCatchType(code->GetBuiltinCatchPrediction());
         if (prediction != NOT_CAUGHT) return prediction;
       } break;
@@ -1702,7 +1701,7 @@ bool Isolate::ComputeLocation(MessageLocation* target) {
   }
 
   if (summary.IsJavaScript()) {
-    shared = handle(summary.AsJavaScript().function()->shared());
+    shared = handle(summary.AsJavaScript().function()->shared(), this);
   }
   *target = MessageLocation(Handle<Script>::cast(script), pos, pos + 1, shared);
   return true;
@@ -1729,7 +1728,7 @@ bool Isolate::ComputeLocationFromException(MessageLocation* target,
       Handle<JSObject>::cast(exception), script_symbol);
   if (!script->IsScript()) return false;
 
-  Handle<Script> cast_script(Script::cast(*script));
+  Handle<Script> cast_script(Script::cast(*script), this);
   *target = MessageLocation(cast_script, start_pos_value, end_pos_value);
   return true;
 }
@@ -1744,12 +1743,13 @@ bool Isolate::ComputeLocationFromStackTrace(MessageLocation* target,
   if (!property->IsJSArray()) return false;
   Handle<JSArray> simple_stack_trace = Handle<JSArray>::cast(property);
 
-  Handle<FrameArray> elements(FrameArray::cast(simple_stack_trace->elements()));
+  Handle<FrameArray> elements(FrameArray::cast(simple_stack_trace->elements()),
+                              this);
 
   const int frame_count = elements->FrameCount();
   for (int i = 0; i < frame_count; i++) {
     if (elements->IsWasmFrame(i) || elements->IsAsmJsWasmFrame(i)) {
-      Handle<WasmInstanceObject> instance(elements->WasmInstance(i));
+      Handle<WasmInstanceObject> instance(elements->WasmInstance(i), this);
       uint32_t func_index =
           static_cast<uint32_t>(elements->WasmFunctionIndex(i)->value());
       int code_offset = elements->Offset(i)->value();
@@ -1758,7 +1758,7 @@ bool Isolate::ComputeLocationFromStackTrace(MessageLocation* target,
       // a second lookup here could lead to inconsistency.
       int byte_offset =
           FrameSummary::WasmCompiledFrameSummary::GetWasmSourcePosition(
-              instance->compiled_module()->GetNativeModule()->code(func_index),
+              instance->module_object()->native_module()->code(func_index),
               code_offset);
 
       bool is_at_number_conversion =
@@ -1767,7 +1767,7 @@ bool Isolate::ComputeLocationFromStackTrace(MessageLocation* target,
       int pos = WasmModuleObject::GetSourcePosition(
           handle(instance->module_object(), this), func_index, byte_offset,
           is_at_number_conversion);
-      Handle<Script> script(instance->module_object()->script());
+      Handle<Script> script(instance->module_object()->script(), this);
 
       *target = MessageLocation(script, pos, pos + 1);
       return true;
@@ -1783,7 +1783,7 @@ bool Isolate::ComputeLocationFromStackTrace(MessageLocation* target,
       const int code_offset = elements->Offset(i)->value();
       const int pos = abstract_code->SourcePosition(code_offset);
 
-      Handle<Script> casted_script(Script::cast(script));
+      Handle<Script> casted_script(Script::cast(script), this);
       *target = MessageLocation(casted_script, pos, pos + 1);
       return true;
     }
@@ -2516,6 +2516,8 @@ Isolate::Isolate()
       atomics_wait_callback_(nullptr),
       atomics_wait_callback_data_(nullptr),
       promise_hook_(nullptr),
+      host_import_module_dynamically_callback_(nullptr),
+      host_initialize_import_meta_object_callback_(nullptr),
       load_start_time_ms_(0),
       serializer_enabled_(false),
       has_fatal_error_(false),
@@ -2576,6 +2578,18 @@ Isolate::Isolate()
   tracing_cpu_profiler_.reset(new TracingCpuProfilerImpl(this));
 
   init_memcopy_functions(this);
+
+  if (FLAG_embedded_builtins) {
+#ifdef V8_MULTI_SNAPSHOTS
+  if (FLAG_untrusted_code_mitigations) {
+    SetEmbeddedBlob(DefaultEmbeddedBlob(), DefaultEmbeddedBlobSize());
+  } else {
+    SetEmbeddedBlob(TrustedEmbeddedBlob(), TrustedEmbeddedBlobSize());
+  }
+#else
+  SetEmbeddedBlob(DefaultEmbeddedBlob(), DefaultEmbeddedBlobSize());
+#endif
+  }
 }
 
 
@@ -2681,13 +2695,14 @@ void Isolate::Deinit() {
   heap_.TearDown();
   logger_->TearDown();
 
-#ifdef V8_EMBEDDED_BUILTINS
-  if (DefaultEmbeddedBlob() == nullptr && embedded_blob() != nullptr) {
-    // We own the embedded blob. Free it.
-    uint8_t* data = const_cast<uint8_t*>(embedded_blob_);
-    InstructionStream::FreeOffHeapInstructionStream(data, embedded_blob_size_);
+  if (FLAG_embedded_builtins) {
+    if (DefaultEmbeddedBlob() == nullptr && embedded_blob() != nullptr) {
+      // We own the embedded blob. Free it.
+      uint8_t* data = const_cast<uint8_t*>(embedded_blob_);
+      InstructionStream::FreeOffHeapInstructionStream(data,
+                                                      embedded_blob_size_);
+    }
   }
-#endif
 
   delete interpreter_;
   interpreter_ = nullptr;
@@ -2853,7 +2868,6 @@ void PrintBuiltinSizes(Isolate* isolate) {
   }
 }
 
-#ifdef V8_EMBEDDED_BUILTINS
 void CreateOffHeapTrampolines(Isolate* isolate) {
   DCHECK(isolate->serializer_enabled());
   DCHECK_NOT_NULL(isolate->embedded_blob());
@@ -2887,10 +2901,8 @@ void CreateOffHeapTrampolines(Isolate* isolate) {
     }
   }
 }
-#endif  // V8_EMBEDDED_BUILTINS
 }  // namespace
 
-#ifdef V8_EMBEDDED_BUILTINS
 void Isolate::PrepareEmbeddedBlobForSerialization() {
   // When preparing the embedded blob, ensure it doesn't exist yet.
   DCHECK_NULL(embedded_blob());
@@ -2907,7 +2919,6 @@ void Isolate::PrepareEmbeddedBlobForSerialization() {
   SetEmbeddedBlob(const_cast<const uint8_t*>(data), size);
   CreateOffHeapTrampolines(this);
 }
-#endif  // V8_EMBEDDED_BUILTINS
 
 bool Isolate::Init(StartupDeserializer* des) {
   TRACE_ISOLATE(init);
@@ -2962,18 +2973,6 @@ bool Isolate::Init(StartupDeserializer* des) {
   compiler_dispatcher_ =
       new CompilerDispatcher(this, V8::GetCurrentPlatform(), FLAG_stack_size);
 
-#ifdef V8_EMBEDDED_BUILTINS
-#ifdef V8_MULTI_SNAPSHOTS
-  if (FLAG_untrusted_code_mitigations) {
-    SetEmbeddedBlob(DefaultEmbeddedBlob(), DefaultEmbeddedBlobSize());
-  } else {
-    SetEmbeddedBlob(TrustedEmbeddedBlob(), TrustedEmbeddedBlobSize());
-  }
-#else
-  SetEmbeddedBlob(DefaultEmbeddedBlob(), DefaultEmbeddedBlobSize());
-#endif
-#endif
-
   // Enable logging before setting up the heap
   logger_->SetUp(this);
 
@@ -3021,19 +3020,20 @@ bool Isolate::Init(StartupDeserializer* des) {
 
   bootstrapper_->Initialize(create_heap_objects);
 
-#ifdef V8_EMBEDDED_BUILTINS
-  if (create_heap_objects && serializer_enabled()) {
-    builtins_constants_table_builder_ = new BuiltinsConstantsTableBuilder(this);
+  if (FLAG_embedded_builtins) {
+    if (create_heap_objects && serializer_enabled()) {
+      builtins_constants_table_builder_ =
+          new BuiltinsConstantsTableBuilder(this);
+    }
   }
-#endif
   setup_delegate_->SetupBuiltins(this);
-#ifdef V8_EMBEDDED_BUILTINS
-  if (create_heap_objects && serializer_enabled()) {
-    builtins_constants_table_builder_->Finalize();
-    delete builtins_constants_table_builder_;
-    builtins_constants_table_builder_ = nullptr;
+  if (FLAG_embedded_builtins) {
+    if (create_heap_objects && serializer_enabled()) {
+      builtins_constants_table_builder_->Finalize();
+      delete builtins_constants_table_builder_;
+      builtins_constants_table_builder_ = nullptr;
+    }
   }
-#endif  // V8_EMBEDDED_BUILTINS
 
   if (create_heap_objects) heap_.CreateFixedStubs();
 
@@ -3491,7 +3491,7 @@ void Isolate::UpdateNoElementsProtectorOnSetElement(Handle<JSObject> object) {
   if (!IsNoElementsProtectorIntact()) return;
   if (!IsArrayOrObjectOrStringPrototype(*object)) return;
   PropertyCell::SetValueWithInvalidation(
-      factory()->no_elements_protector(),
+      this, factory()->no_elements_protector(),
       handle(Smi::FromInt(kProtectorInvalid), this));
 }
 
@@ -3514,24 +3514,27 @@ void Isolate::InvalidateArrayConstructorProtector() {
 void Isolate::InvalidateArraySpeciesProtector() {
   DCHECK(factory()->array_species_protector()->value()->IsSmi());
   DCHECK(IsArraySpeciesLookupChainIntact());
-  factory()->array_species_protector()->set_value(
-      Smi::FromInt(kProtectorInvalid));
+  PropertyCell::SetValueWithInvalidation(
+      this, factory()->array_species_protector(),
+      handle(Smi::FromInt(kProtectorInvalid), this));
   DCHECK(!IsArraySpeciesLookupChainIntact());
 }
 
 void Isolate::InvalidateTypedArraySpeciesProtector() {
   DCHECK(factory()->typed_array_species_protector()->value()->IsSmi());
   DCHECK(IsTypedArraySpeciesLookupChainIntact());
-  factory()->typed_array_species_protector()->set_value(
-      Smi::FromInt(kProtectorInvalid));
+  PropertyCell::SetValueWithInvalidation(
+      this, factory()->typed_array_species_protector(),
+      handle(Smi::FromInt(kProtectorInvalid), this));
   DCHECK(!IsTypedArraySpeciesLookupChainIntact());
 }
 
 void Isolate::InvalidatePromiseSpeciesProtector() {
   DCHECK(factory()->promise_species_protector()->value()->IsSmi());
   DCHECK(IsPromiseSpeciesLookupChainIntact());
-  factory()->promise_species_protector()->set_value(
-      Smi::FromInt(kProtectorInvalid));
+  PropertyCell::SetValueWithInvalidation(
+      this, factory()->promise_species_protector(),
+      handle(Smi::FromInt(kProtectorInvalid), this));
   DCHECK(!IsPromiseSpeciesLookupChainIntact());
 }
 
@@ -3547,7 +3550,7 @@ void Isolate::InvalidateArrayIteratorProtector() {
   DCHECK(factory()->array_iterator_protector()->value()->IsSmi());
   DCHECK(IsArrayIteratorLookupChainIntact());
   PropertyCell::SetValueWithInvalidation(
-      factory()->array_iterator_protector(),
+      this, factory()->array_iterator_protector(),
       handle(Smi::FromInt(kProtectorInvalid), this));
   DCHECK(!IsArrayIteratorLookupChainIntact());
 }
@@ -3556,7 +3559,7 @@ void Isolate::InvalidateArrayBufferNeuteringProtector() {
   DCHECK(factory()->array_buffer_neutering_protector()->value()->IsSmi());
   DCHECK(IsArrayBufferNeuteringIntact());
   PropertyCell::SetValueWithInvalidation(
-      factory()->array_buffer_neutering_protector(),
+      this, factory()->array_buffer_neutering_protector(),
       handle(Smi::FromInt(kProtectorInvalid), this));
   DCHECK(!IsArrayBufferNeuteringIntact());
 }
@@ -3565,7 +3568,7 @@ void Isolate::InvalidatePromiseHookProtector() {
   DCHECK(factory()->promise_hook_protector()->value()->IsSmi());
   DCHECK(IsPromiseHookProtectorIntact());
   PropertyCell::SetValueWithInvalidation(
-      factory()->promise_hook_protector(),
+      this, factory()->promise_hook_protector(),
       handle(Smi::FromInt(kProtectorInvalid), this));
   DCHECK(!IsPromiseHookProtectorIntact());
 }
@@ -3582,7 +3585,7 @@ void Isolate::InvalidatePromiseThenProtector() {
   DCHECK(factory()->promise_then_protector()->value()->IsSmi());
   DCHECK(IsPromiseThenLookupChainIntact());
   PropertyCell::SetValueWithInvalidation(
-      factory()->promise_then_protector(),
+      this, factory()->promise_then_protector(),
       handle(Smi::FromInt(kProtectorInvalid), this));
   DCHECK(!IsPromiseThenLookupChainIntact());
 }
@@ -3671,7 +3674,7 @@ Handle<Symbol> Isolate::SymbolFor(Heap::RootListIndex dictionary_index,
         UNREACHABLE();
     }
   } else {
-    symbol = Handle<Symbol>(Symbol::cast(dictionary->ValueAt(entry)));
+    symbol = Handle<Symbol>(Symbol::cast(dictionary->ValueAt(entry)), this);
   }
   return symbol;
 }
@@ -4141,7 +4144,7 @@ bool StackLimitCheck::JsHasOverflowed(uintptr_t gap) const {
 SaveContext::SaveContext(Isolate* isolate)
     : isolate_(isolate), prev_(isolate->save_context()) {
   if (isolate->context() != nullptr) {
-    context_ = Handle<Context>(isolate->context());
+    context_ = Handle<Context>(isolate->context(), isolate);
   }
   isolate->set_save_context(this);
 

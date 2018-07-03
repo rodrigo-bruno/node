@@ -48,6 +48,7 @@
 #include "src/base/bits.h"
 #include "src/base/cpu.h"
 #include "src/code-stubs.h"
+#include "src/deoptimizer.h"
 #include "src/macro-assembler.h"
 #include "src/s390/assembler-s390-inl.h"
 
@@ -271,6 +272,11 @@ bool RelocInfo::IsCodedSpecially() {
 
 bool RelocInfo::IsInConstantPool() { return false; }
 
+int RelocInfo::GetDeoptimizationId(Isolate* isolate, DeoptimizeKind kind) {
+  DCHECK(IsRuntimeEntry(rmode_));
+  return Deoptimizer::GetDeoptimizationId(isolate, target_address(), kind);
+}
+
 void RelocInfo::set_js_to_wasm_address(Address address,
                                        ICacheFlushMode icache_flush_mode) {
   DCHECK_EQ(rmode_, JS_TO_WASM_CALL);
@@ -283,8 +289,8 @@ Address RelocInfo::js_to_wasm_address() const {
   return Assembler::target_address_at(pc_, constant_pool_);
 }
 
-uint32_t RelocInfo::wasm_stub_call_tag() const {
-  DCHECK_EQ(rmode_, WASM_STUB_CALL);
+uint32_t RelocInfo::wasm_call_tag() const {
+  DCHECK(rmode_ == WASM_CALL || rmode_ == WASM_STUB_CALL);
   return static_cast<uint32_t>(
       Assembler::target_address_at(pc_, constant_pool_));
 }
@@ -321,8 +327,8 @@ void Assembler::AllocateAndInstallRequestedHeapObjects(Isolate* isolate) {
     Address pc = reinterpret_cast<Address>(buffer_ + request.offset());
     switch (request.kind()) {
       case HeapObjectRequest::kHeapNumber:
-        object = isolate->factory()->NewHeapNumber(request.heap_number(),
-                                                   IMMUTABLE, TENURED);
+        object =
+            isolate->factory()->NewHeapNumber(request.heap_number(), TENURED);
         set_target_address_at(pc, kNullAddress,
                               reinterpret_cast<Address>(object.location()),
                               SKIP_ICACHE_FLUSH);
@@ -341,8 +347,8 @@ void Assembler::AllocateAndInstallRequestedHeapObjects(Isolate* isolate) {
 // -----------------------------------------------------------------------------
 // Specific instructions, constants, and masks.
 
-Assembler::Assembler(IsolateData isolate_data, void* buffer, int buffer_size)
-    : AssemblerBase(isolate_data, buffer, buffer_size) {
+Assembler::Assembler(const Options& options, void* buffer, int buffer_size)
+    : AssemblerBase(options, buffer, buffer_size) {
   reloc_info_writer.Reposition(buffer_ + buffer_size_, pc_);
   code_targets_.reserve(100);
 
@@ -786,8 +792,8 @@ void Assembler::dp(uintptr_t data) {
 void Assembler::RecordRelocInfo(RelocInfo::Mode rmode, intptr_t data) {
   if (RelocInfo::IsNone(rmode) ||
       // Don't record external references unless the heap will be serialized.
-      (rmode == RelocInfo::EXTERNAL_REFERENCE && !serializer_enabled() &&
-       !emit_debug_code())) {
+      (RelocInfo::IsOnlyForSerializer(rmode) &&
+       !options().record_reloc_info_for_serialization && !emit_debug_code())) {
     return;
   }
   DeferredRelocInfo rinfo(pc_offset(), rmode, data);

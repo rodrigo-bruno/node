@@ -1007,10 +1007,12 @@ TF_BUILTIN(ArrayPrototypePop, CodeStubAssembler) {
 
   BIND(&runtime);
   {
-    Node* target = LoadFromFrame(StandardFrameConstants::kFunctionOffset,
-                                 MachineType::TaggedPointer());
-    TailCallStub(CodeFactory::ArrayPop(isolate()), context, target,
-                 UndefinedConstant(), argc);
+    // We are not using Parameter(Descriptor::kJSTarget) and loading the value
+    // from the current frame here in order to reduce register pressure on the
+    // fast path.
+    TNode<JSFunction> target = LoadTargetFromFrame();
+    TailCallBuiltin(Builtins::kArrayPop, context, target, UndefinedConstant(),
+                    argc);
   }
 }
 
@@ -1139,10 +1141,12 @@ TF_BUILTIN(ArrayPrototypePush, CodeStubAssembler) {
 
   BIND(&runtime);
   {
-    Node* target = LoadFromFrame(StandardFrameConstants::kFunctionOffset,
-                                 MachineType::TaggedPointer());
-    TailCallStub(CodeFactory::ArrayPush(isolate()), context, target,
-                 UndefinedConstant(), argc);
+    // We are not using Parameter(Descriptor::kJSTarget) and loading the value
+    // from the current frame here in order to reduce register pressure on the
+    // fast path.
+    TNode<JSFunction> target = LoadTargetFromFrame();
+    TailCallBuiltin(Builtins::kArrayPush, context, target, UndefinedConstant(),
+                    argc);
   }
 }
 
@@ -1183,8 +1187,8 @@ class ArrayPrototypeSliceCodeStubAssembler : public CodeStubAssembler {
 
     CSA_ASSERT(this, SmiGreaterThanOrEqual(CAST(from), SmiConstant(0)));
 
-    result.Bind(CallStub(CodeFactory::ExtractFastJSArray(isolate()), context,
-                         array, from, count));
+    result.Bind(CallBuiltin(Builtins::kExtractFastJSArray, context, array, from,
+                            count));
     Goto(&done);
 
     BIND(&try_fast_arguments);
@@ -1339,7 +1343,7 @@ TF_BUILTIN(ArrayPrototypeSlice, ArrayPrototypeSliceCodeStubAssembler) {
   BIND(&clone);
 
   args.PopAndReturn(
-      CallStub(CodeFactory::CloneFastJSArray(isolate()), context, receiver));
+      CallBuiltin(Builtins::kCloneFastJSArray, context, receiver));
 
   BIND(&check_arguments_length);
 
@@ -1636,10 +1640,12 @@ TF_BUILTIN(ArrayPrototypeShift, CodeStubAssembler) {
 
   BIND(&runtime);
   {
-    Node* target = LoadFromFrame(StandardFrameConstants::kFunctionOffset,
-                                 MachineType::TaggedPointer());
-    TailCallStub(CodeFactory::ArrayShift(isolate()), context, target,
-                 UndefinedConstant(), argc);
+    // We are not using Parameter(Descriptor::kJSTarget) and loading the value
+    // from the current frame here in order to reduce register pressure on the
+    // fast path.
+    TNode<JSFunction> target = LoadTargetFromFrame();
+    TailCallBuiltin(Builtins::kArrayShift, context, target, UndefinedConstant(),
+                    argc);
   }
 }
 

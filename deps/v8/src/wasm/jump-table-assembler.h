@@ -13,27 +13,19 @@ namespace internal {
 namespace wasm {
 
 class JumpTableAssembler : public TurboAssembler {
+ public:
   // {JumpTableAssembler} is never used during snapshot generation, and its code
   // must be independent of the code range of any isolate anyway. So just use
-  // this default {IsolateData} for each {JumpTableAssembler}.
-  static constexpr IsolateData GetDefaultIsolateData() {
-#if V8_TARGET_ARCH_X64 || V8_TARGET_ARCH_ARM64
-    return IsolateData(kSerializerDisabled, kNullAddress);
-#else
-    return IsolateData(kSerializerDisabled);
-#endif
-  }
-
- public:
-  JumpTableAssembler() : TurboAssembler(GetDefaultIsolateData(), nullptr, 0) {}
+  // this default {Options} for each {JumpTableAssembler}.
+  JumpTableAssembler()
+      : TurboAssembler(nullptr, Assembler::Options{}, nullptr, 0,
+                       CodeObjectRequired::kNo) {}
 
   // Instantiate a {JumpTableAssembler} for patching.
   explicit JumpTableAssembler(Address slot_addr, int size = 256)
-      : TurboAssembler(GetDefaultIsolateData(),
-                       reinterpret_cast<void*>(slot_addr), size) {}
-
-  // Emit a trampoline to a possibly far away code target.
-  void EmitJumpTrampoline(Address target);
+      : TurboAssembler(nullptr, Assembler::Options{},
+                       reinterpret_cast<void*>(slot_addr), size,
+                       CodeObjectRequired::kNo) {}
 
 #if V8_TARGET_ARCH_X64
   static constexpr int kJumpTableSlotSize = 18;
@@ -51,6 +43,10 @@ class JumpTableAssembler : public TurboAssembler {
   static constexpr int kJumpTableSlotSize = 48;
 #elif V8_TARGET_ARCH_PPC
   static constexpr int kJumpTableSlotSize = 24;
+#elif V8_TARGET_ARCH_MIPS
+  static constexpr int kJumpTableSlotSize = 6 * kInstrSize;
+#elif V8_TARGET_ARCH_MIPS64
+  static constexpr int kJumpTableSlotSize = 8 * kInstrSize;
 #else
   static constexpr int kJumpTableSlotSize = 1;
 #endif

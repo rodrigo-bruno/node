@@ -59,6 +59,10 @@ static v8::CodeEventType GetCodeEventTypeForTag(
       TAGS_LIST(V)
 #undef V
   }
+  // The execution should never pass here
+  UNREACHABLE();
+  // NOTE(mmarchini): Workaround to fix a compiler failure on GCC 4.9
+  return v8::CodeEventType::kUnknownType;
 }
 #define CALL_CODE_EVENT_HANDLER(Call) \
   if (listener_) {                    \
@@ -669,7 +673,8 @@ void JitLogger::LogRecordedBuffer(AbstractCode* code,
   event.code_len = code->InstructionSize();
   Handle<SharedFunctionInfo> shared_function_handle;
   if (shared && shared->script()->IsScript()) {
-    shared_function_handle = Handle<SharedFunctionInfo>(shared);
+    shared_function_handle =
+        Handle<SharedFunctionInfo>(shared, shared->GetIsolate());
   }
   event.script = ToApiHandle<v8::UnboundScript>(shared_function_handle);
   event.name.str = name;
@@ -1526,45 +1531,95 @@ void Logger::SuspectReadEvent(Name* name, Object* obj) {
 
 namespace {
 void AppendFunctionMessage(Log::MessageBuilder& msg, const char* reason,
-                           Script* script, int script_id, double time_delta,
-                           int start_position, int end_position,
-                           base::ElapsedTimer* timer) {
-  msg << "function" << Logger::kNext << reason << Logger::kNext;
-  if (script) {
-    if (script->name()->IsString()) {
-      msg << String::cast(script->name());
-    }
-    msg << Logger::kNext << script->id();
-  } else {
-    msg << Logger::kNext << script_id;
-  }
-  msg << Logger::kNext << start_position << Logger::kNext << end_position
+                           int script_id, double time_delta, int start_position,
+                           int end_position, base::ElapsedTimer* timer) {
+  msg << "function" << Logger::kNext << reason << Logger::kNext << script_id
+      << Logger::kNext << start_position << Logger::kNext << end_position
       << Logger::kNext << time_delta << Logger::kNext
       << timer->Elapsed().InMicroseconds() << Logger::kNext;
 }
 }  // namespace
 
-void Logger::FunctionEvent(const char* reason, Script* script, int script_id,
-                           double time_delta, int start_position,
-                           int end_position, String* function_name) {
+void Logger::FunctionEvent(const char* reason, int script_id, double time_delta,
+                           int start_position, int end_position,
+                           String* function_name) {
   if (!log_->IsEnabled() || !FLAG_log_function_events) return;
   Log::MessageBuilder msg(log_);
-  AppendFunctionMessage(msg, reason, script, script_id, time_delta,
-                        start_position, end_position, &timer_);
+  AppendFunctionMessage(msg, reason, script_id, time_delta, start_position,
+                        end_position, &timer_);
   if (function_name) msg << function_name;
   msg.WriteToLogFile();
 }
 
-void Logger::FunctionEvent(const char* reason, Script* script, int script_id,
-                           double time_delta, int start_position,
-                           int end_position, const char* function_name,
+void Logger::FunctionEvent(const char* reason, int script_id, double time_delta,
+                           int start_position, int end_position,
+                           const char* function_name,
                            size_t function_name_length) {
   if (!log_->IsEnabled() || !FLAG_log_function_events) return;
   Log::MessageBuilder msg(log_);
-  AppendFunctionMessage(msg, reason, script, script_id, time_delta,
-                        start_position, end_position, &timer_);
+  AppendFunctionMessage(msg, reason, script_id, time_delta, start_position,
+                        end_position, &timer_);
   if (function_name_length > 0) {
     msg.AppendStringPart(function_name, function_name_length);
+  }
+  msg.WriteToLogFile();
+}
+
+namespace {
+void AppendCompilationCacheMessage(Log::MessageBuilder& msg,
+                                   SharedFunctionInfo* sfi) {
+  int script_id = -1;
+  if (sfi->script()->IsScript()) {
+    script_id = Script::cast(sfi->script())->id();
+  }
+  msg << script_id << Logger::kNext << sfi->StartPosition() << Logger::kNext
+      << sfi->EndPosition();
+}
+}  // namespace
+
+void Logger::CompilationCacheEvent(const char* action, const char* cache_type,
+                                   SharedFunctionInfo* sfi) {
+  if (!log_->IsEnabled() || !FLAG_log_function_events) return;
+  Log::MessageBuilder msg(log_);
+  msg << "compilation-cache" << Logger::kNext << action << Logger::kNext
+      << cache_type << Logger::kNext;
+  AppendCompilationCacheMessage(msg, sfi);
+  msg.WriteToLogFile();
+}
+
+void Logger::ScriptEvent(ScriptEventType type, int script_id) {
+  if (!log_->IsEnabled() || !FLAG_log_function_events) return;
+  Log::MessageBuilder msg(log_);
+  msg << "script" << Logger::kNext;
+  switch (type) {
+    case ScriptEventType::kReserveId:
+      msg << "reserve-id";
+      break;
+    case ScriptEventType::kCreate:
+      msg << "create";
+      break;
+    case ScriptEventType::kDeserialize:
+      msg << "deserialize";
+      break;
+    case ScriptEventType::kBackgroundCompile:
+      msg << "background-compile";
+      break;
+  }
+  msg << Logger::kNext << script_id;
+  msg.WriteToLogFile();
+}
+
+void Logger::ScriptDetails(Script* script) {
+  if (!log_->IsEnabled() || !FLAG_log_function_events) return;
+  Log::MessageBuilder msg(log_);
+  msg << "script-details" << Logger::kNext << script->id() << Logger::kNext;
+  if (script->name()->IsString()) {
+    msg << String::cast(script->name());
+  }
+  msg << Logger::kNext << script->line_offset() << Logger::kNext
+      << script->column_offset() << Logger::kNext;
+  if (script->source_mapping_url()->IsString()) {
+    msg << String::cast(script->source_mapping_url());
   }
   msg.WriteToLogFile();
 }
@@ -1680,7 +1735,7 @@ void Logger::MapDetails(Map* map) {
       << reinterpret_cast<void*>(map) << kNext;
   if (FLAG_trace_maps_details) {
     std::ostringstream buffer;
-    map->PrintMapDetails(buffer);
+    map->PrintMapDetails(isolate_, buffer);
     msg << buffer.str().c_str();
   }
   msg.WriteToLogFile();
@@ -1706,10 +1761,10 @@ static void AddFunctionAndCode(SharedFunctionInfo* sfi,
                                Handle<SharedFunctionInfo>* sfis,
                                Handle<AbstractCode>* code_objects, int offset) {
   if (sfis != nullptr) {
-    sfis[offset] = Handle<SharedFunctionInfo>(sfi);
+    sfis[offset] = Handle<SharedFunctionInfo>(sfi, sfi->GetIsolate());
   }
   if (code_objects != nullptr) {
-    code_objects[offset] = Handle<AbstractCode>(code_object);
+    code_objects[offset] = Handle<AbstractCode>(code_object, sfi->GetIsolate());
   }
 }
 
@@ -1756,23 +1811,23 @@ static int EnumerateCompiledFunctions(Heap* heap,
   return compiled_funcs_count;
 }
 
-static int EnumerateWasmModules(Heap* heap,
-                                Handle<WasmCompiledModule>* modules) {
+static int EnumerateWasmModuleObjects(
+    Heap* heap, Handle<WasmModuleObject>* module_objects) {
   HeapIterator iterator(heap);
   DisallowHeapAllocation no_gc;
-  int wasm_modules_count = 0;
+  int module_objects_count = 0;
 
   for (HeapObject* obj = iterator.next(); obj != nullptr;
        obj = iterator.next()) {
-    if (obj->IsWasmCompiledModule()) {
-      WasmCompiledModule* module = WasmCompiledModule::cast(obj);
-      if (modules != nullptr) {
-        modules[wasm_modules_count] = Handle<WasmCompiledModule>(module);
+    if (obj->IsWasmModuleObject()) {
+      WasmModuleObject* module = WasmModuleObject::cast(obj);
+      if (module_objects != nullptr) {
+        module_objects[module_objects_count] = handle(module, heap->isolate());
       }
-      wasm_modules_count++;
+      module_objects_count++;
     }
   }
-  return wasm_modules_count;
+  return module_objects_count;
 }
 
 void Logger::LogCodeObject(Object* object) {
@@ -2081,21 +2136,24 @@ void ExistingCodeLogger::LogCompiledFunctions() {
   // GetScriptLineNumber call.
   for (int i = 0; i < compiled_funcs_count; ++i) {
     if (sfis[i]->function_data()->IsInterpreterData()) {
-      LogExistingFunction(sfis[i],
-                          Handle<AbstractCode>(AbstractCode::cast(
-                              sfis[i]->InterpreterTrampoline())),
-                          CodeEventListener::INTERPRETED_FUNCTION_TAG);
+      LogExistingFunction(
+          sfis[i],
+          Handle<AbstractCode>(
+              AbstractCode::cast(sfis[i]->InterpreterTrampoline()), isolate_),
+          CodeEventListener::INTERPRETED_FUNCTION_TAG);
     }
     if (code_objects[i].is_identical_to(BUILTIN_CODE(isolate_, CompileLazy)))
       continue;
     LogExistingFunction(sfis[i], code_objects[i]);
   }
 
-  const int compiled_wasm_modules_count = EnumerateWasmModules(heap, nullptr);
-  ScopedVector<Handle<WasmCompiledModule>> modules(compiled_wasm_modules_count);
-  EnumerateWasmModules(heap, modules.start());
-  for (int i = 0; i < compiled_wasm_modules_count; ++i) {
-    modules[i]->GetNativeModule()->LogWasmCodes(isolate_);
+  const int wasm_module_objects_count =
+      EnumerateWasmModuleObjects(heap, nullptr);
+  std::unique_ptr<Handle<WasmModuleObject>[]> module_objects(
+      new Handle<WasmModuleObject>[wasm_module_objects_count]);
+  EnumerateWasmModuleObjects(heap, module_objects.get());
+  for (int i = 0; i < wasm_module_objects_count; ++i) {
+    module_objects[i]->native_module()->LogWasmCodes(isolate_);
   }
 }
 
@@ -2134,12 +2192,12 @@ void ExistingCodeLogger::LogExistingFunction(
     Handle<SharedFunctionInfo> shared, Handle<AbstractCode> code,
     CodeEventListener::LogEventsAndTags tag) {
   if (shared->script()->IsScript()) {
-    Handle<Script> script(Script::cast(shared->script()));
+    Handle<Script> script(Script::cast(shared->script()), isolate_);
     int line_num = Script::GetLineNumber(script, shared->StartPosition()) + 1;
     int column_num =
         Script::GetColumnNumber(script, shared->StartPosition()) + 1;
     if (script->name()->IsString()) {
-      Handle<String> script_name(String::cast(script->name()));
+      Handle<String> script_name(String::cast(script->name()), isolate_);
       if (line_num > 0) {
         CALL_CODE_EVENT_HANDLER(
             CodeCreateEvent(Logger::ToNativeByScript(tag, *script), *code,

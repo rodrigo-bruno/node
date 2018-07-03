@@ -127,7 +127,6 @@ namespace internal {
 #define FOR_EACH_INTRINSIC_DEBUG(F)             \
   F(ClearStepping, 0, 1)                        \
   F(CollectGarbage, 1, 1)                       \
-  F(DebugApplyInstrumentation, 1, 1)            \
   F(DebugBreakAtEntry, 1, 1)                    \
   F(DebugCollectCoverage, 0, 1)                 \
   F(DebugGetLoadedScripts, 0, 1)                \
@@ -155,7 +154,8 @@ namespace internal {
   F(ScriptLocationFromLine, 4, 1)               \
   F(ScriptPositionInfo2, 3, 1)                  \
   F(ScriptPositionInfo, 3, 1)                   \
-  F(SetGeneratorScopeVariableValue, 4, 1)
+  F(SetGeneratorScopeVariableValue, 4, 1)       \
+  F(LiveEditPatchScript, 2, 1)
 
 #define FOR_EACH_INTRINSIC_FORIN(F) \
   F(ForInEnumerate, 1, 1)           \
@@ -225,7 +225,7 @@ namespace internal {
   F(InternalCompare, 3, 1)                   \
   F(InternalDateFormat, 2, 1)                \
   F(InternalNumberFormat, 2, 1)              \
-  F(IsInitializedIntlObject, 1, 1)           \
+  F(IntlUnwrapReceiver, 5, 1)                \
   F(IsInitializedIntlObjectOfType, 2, 1)     \
   F(MarkAsInitializedIntlObjectOfType, 2, 1) \
   F(PluralRulesSelect, 2, 1)                 \
@@ -356,6 +356,8 @@ namespace internal {
   F(ObjectEntriesSkipFastPath, 1, 1)                            \
   F(ObjectHasOwnProperty, 2, 1)                                 \
   F(ObjectKeys, 1, 1)                                           \
+  F(ObjectGetOwnPropertyNames, 1, 1)                            \
+  F(ObjectGetOwnPropertyNamesTryFast, 1, 1)                     \
   F(ObjectValues, 1, 1)                                         \
   F(ObjectValuesSkipFastPath, 1, 1)                             \
   F(OptimizeObjectForAddingMultipleProperties, 2, 1)            \
@@ -553,8 +555,7 @@ namespace internal {
   F(TraceEnter, 0, 1)                         \
   F(TraceExit, 1, 1)                          \
   F(UnblockConcurrentRecompilation, 0, 1)     \
-  F(ValidateWasmInstancesChain, 2, 1)         \
-  F(ValidateWasmModuleState, 1, 1)            \
+  F(WasmGetNumberOfInstances, 1, 1)           \
   F(WasmNumInterpretedCalls, 1, 1)            \
   F(WasmTraceMemory, 1, 1)                    \
   F(WasmMemoryHasFullGuardRegion, 1, 1)
@@ -575,7 +576,7 @@ namespace internal {
   F(WasmExceptionGetElement, 1, 1)   \
   F(WasmExceptionSetElement, 2, 1)   \
   F(WasmGetExceptionRuntimeId, 0, 1) \
-  F(WasmGrowMemory, 1, 1)            \
+  F(WasmGrowMemory, 2, 1)            \
   F(WasmRunInterpreter, 2, 1)        \
   F(WasmStackGuard, 0, 1)            \
   F(WasmThrow, 0, 1)                 \

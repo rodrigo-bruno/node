@@ -26,7 +26,6 @@
 #include "src/wasm/function-body-decoder.h"
 #include "src/wasm/local-decl-encoder.h"
 #include "src/wasm/wasm-code-manager.h"
-#include "src/wasm/wasm-code-specialization.h"
 #include "src/wasm/wasm-external-refs.h"
 #include "src/wasm/wasm-interpreter.h"
 #include "src/wasm/wasm-js.h"
@@ -87,7 +86,7 @@ struct ManuallyImportedJSFunction {
 
 // A  Wasm module builder. Globals are pre-set, however, memory and code may be
 // progressively added by a test. In turn, we piecemeal update the runtime
-// objects, i.e. {WasmInstanceObject}, {WasmCompiledModule} and, if necessary,
+// objects, i.e. {WasmInstanceObject}, {WasmModuleObject} and, if necessary,
 // the interpreter.
 class TestingModuleBuilder {
  public:
@@ -181,7 +180,8 @@ class TestingModuleBuilder {
 
   void SetHasSharedMemory() { test_module_->has_shared_memory = true; }
 
-  uint32_t AddFunction(FunctionSig* sig, const char* name);
+  enum FunctionType { kImport, kWasm };
+  uint32_t AddFunction(FunctionSig* sig, const char* name, FunctionType type);
 
   Handle<JSFunction> WrapCode(uint32_t index);
 
@@ -211,9 +211,6 @@ class TestingModuleBuilder {
   }
   void Link() {
     if (linked_) return;
-    CodeSpecialization code_specialization;
-    code_specialization.RelocateDirectCalls(native_module_);
-    code_specialization.ApplyToWholeModule(native_module_);
     linked_ = true;
     native_module_->SetExecutable(true);
   }

@@ -27,7 +27,7 @@ InstructionSelector::InstructionSelector(
     EnableSwitchJumpTable enable_switch_jump_table,
     SourcePositionMode source_position_mode, Features features,
     EnableScheduling enable_scheduling,
-    EnableSerialization enable_serialization,
+    EnableRootsRelativeAddressing enable_roots_relative_addressing,
     PoisoningMitigationLevel poisoning_level, EnableTraceTurboJson trace_turbo)
     : zone_(zone),
       linkage_(linkage),
@@ -48,7 +48,7 @@ InstructionSelector::InstructionSelector(
       virtual_register_rename_(zone),
       scheduler_(nullptr),
       enable_scheduling_(enable_scheduling),
-      enable_serialization_(enable_serialization),
+      enable_roots_relative_addressing_(enable_roots_relative_addressing),
       enable_switch_jump_table_(enable_switch_jump_table),
       poisoning_level_(poisoning_level),
       frame_(frame),
@@ -420,7 +420,7 @@ void InstructionSelector::SetEffectLevel(Node* node, int effect_level) {
 }
 
 bool InstructionSelector::CanAddressRelativeToRootsRegister() const {
-  return enable_serialization_ == kDisableSerialization &&
+  return enable_roots_relative_addressing_ == kEnableRootsRelativeAddressing &&
          CanUseRootsRegister();
 }
 
@@ -2404,7 +2404,7 @@ void InstructionSelector::VisitI32x4UConvertF32x4(Node* node) {
         // && !V8_TARGET_ARCH_MIPS64
 
 #if !V8_TARGET_ARCH_ARM && !V8_TARGET_ARCH_ARM64 && !V8_TARGET_ARCH_MIPS && \
-    !V8_TARGET_ARCH_MIPS64
+    !V8_TARGET_ARCH_MIPS64 && !V8_TARGET_ARCH_IA32
 void InstructionSelector::VisitI32x4SConvertI16x8Low(Node* node) {
   UNIMPLEMENTED();
 }
@@ -2437,11 +2437,6 @@ void InstructionSelector::VisitI16x8UConvertI8x16High(Node* node) {
   UNIMPLEMENTED();
 }
 
-#endif  // !V8_TARGET_ARCH_ARM && !V8_TARGET_ARCH_ARM64 && !V8_TARGET_ARCH_MIPS
-        // && !V8_TARGET_ARCH_MIPS64
-
-#if !V8_TARGET_ARCH_ARM && !V8_TARGET_ARCH_ARM64 && !V8_TARGET_ARCH_MIPS && \
-    !V8_TARGET_ARCH_MIPS64 && !V8_TARGET_ARCH_IA32
 void InstructionSelector::VisitI16x8SConvertI32x4(Node* node) {
   UNIMPLEMENTED();
 }
@@ -2895,6 +2890,14 @@ FrameStateDescriptor* InstructionSelector::GetFrameStateDescriptor(
       instruction_zone(), state_info.type(), state_info.bailout_id(),
       state_info.state_combine(), parameters, locals, stack,
       state_info.shared_info(), outer_state);
+}
+
+// static
+bool InstructionSelector::TryMatchIdentity(const uint8_t* shuffle) {
+  for (int i = 0; i < kSimd128Size; ++i) {
+    if (shuffle[i] != i) return false;
+  }
+  return true;
 }
 
 // static

@@ -350,28 +350,28 @@ C_REGISTERS(DECLARE_C_REGISTER)
 class Operand BASE_EMBEDDED {
  public:
   // immediate
-  INLINE(explicit Operand(intptr_t immediate,
-                          RelocInfo::Mode rmode = RelocInfo::NONE)
-         : rmode_(rmode)) {
+  V8_INLINE explicit Operand(intptr_t immediate,
+                             RelocInfo::Mode rmode = RelocInfo::NONE)
+      : rmode_(rmode) {
     value_.immediate = immediate;
   }
-  INLINE(static Operand Zero()) { return Operand(static_cast<intptr_t>(0)); }
-  INLINE(explicit Operand(const ExternalReference& f)
-         : rmode_(RelocInfo::EXTERNAL_REFERENCE)) {
+  V8_INLINE static Operand Zero() { return Operand(static_cast<intptr_t>(0)); }
+  V8_INLINE explicit Operand(const ExternalReference& f)
+      : rmode_(RelocInfo::EXTERNAL_REFERENCE) {
     value_.immediate = static_cast<intptr_t>(f.address());
   }
   explicit Operand(Handle<HeapObject> handle);
-  INLINE(explicit Operand(Smi* value) : rmode_(RelocInfo::NONE)) {
+  V8_INLINE explicit Operand(Smi* value) : rmode_(RelocInfo::NONE) {
     value_.immediate = reinterpret_cast<intptr_t>(value);
   }
 
   // rm
-  INLINE(explicit Operand(Register rm));
+  V8_INLINE explicit Operand(Register rm);
 
   static Operand EmbeddedNumber(double value);  // Smi or HeapNumber
 
   // Return true if this is a register operand.
-  INLINE(bool is_reg() const) { return rm_.is_valid(); }
+  V8_INLINE bool is_reg() const { return rm_.is_valid(); }
 
   bool must_output_reloc_info(const Assembler* assembler) const;
 
@@ -488,9 +488,7 @@ class Assembler : public AssemblerBase {
   // buffer for code generation and assumes its size to be buffer_size. If the
   // buffer is too small, a fatal error occurs. No deallocation of the buffer is
   // done upon destruction of the assembler.
-  Assembler(Isolate* isolate, void* buffer, int buffer_size)
-      : Assembler(IsolateData(isolate), buffer, buffer_size) {}
-  Assembler(IsolateData isolate_data, void* buffer, int buffer_size);
+  Assembler(const Options& options, void* buffer, int buffer_size);
   virtual ~Assembler() {}
 
   // GetCode emits any pending (non-emitted) code and fills the descriptor
@@ -535,10 +533,10 @@ class Assembler : public AssemblerBase {
 
   // Read/Modify the code target address in the branch/call instruction at pc.
   // The isolate argument is unused (and may be nullptr) when skipping flushing.
-  INLINE(static Address target_address_at(Address pc, Address constant_pool));
-  INLINE(static void set_target_address_at(
+  V8_INLINE static Address target_address_at(Address pc, Address constant_pool);
+  V8_INLINE static void set_target_address_at(
       Address pc, Address constant_pool, Address target,
-      ICacheFlushMode icache_flush_mode = FLUSH_ICACHE_IF_NEEDED));
+      ICacheFlushMode icache_flush_mode = FLUSH_ICACHE_IF_NEEDED);
 
   // Return the code target address at a call site from the return address
   // of that call in the instruction stream.
@@ -546,7 +544,7 @@ class Assembler : public AssemblerBase {
 
   // Given the address of the beginning of a call, return the address
   // in the instruction stream that the call will return to.
-  INLINE(static Address return_address_from_call_start(Address pc));
+  V8_INLINE static Address return_address_from_call_start(Address pc);
 
   inline Handle<Object> code_target_object_handle_at(Address pc);
   // This sets the branch destination.
@@ -765,7 +763,6 @@ inline void rsy_format(Opcode op, int f1, int f2, int f3, int f4) {
     rsy_format(op_name, r1.code(), r3.code(), b2.code(), d2.immediate());  \
   }                                                                        \
   void name(Register r1, Register r3, Operand d2) {                        \
-    DCHECK_NE(d2.immediate(), 0);                                          \
     name(r1, r3, r0, d2);                                                  \
   }                                                                        \
   void name(Register r1, Register r3, const MemOperand& opnd) {            \

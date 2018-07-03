@@ -33,7 +33,6 @@ class TurboAssemblerBase : public Assembler {
   void set_has_frame(bool v) { has_frame_ = v; }
   bool has_frame() const { return has_frame_; }
 
-#ifdef V8_EMBEDDED_BUILTINS
   // Loads the given constant or external reference without embedding its direct
   // pointer. The produced code is isolate-independent.
   void IndirectLoadConstant(Register destination, Handle<HeapObject> object);
@@ -42,19 +41,30 @@ class TurboAssemblerBase : public Assembler {
 
   virtual void LoadFromConstantsTable(Register destination,
                                       int constant_index) = 0;
-  virtual void LoadExternalReference(Register destination,
-                                     int reference_index) = 0;
-  virtual void LoadBuiltin(Register destination, int builtin_index) = 0;
+
   virtual void LoadRootRegisterOffset(Register destination,
                                       intptr_t offset) = 0;
-#endif  // V8_EMBEDDED_BUILTINS
+  virtual void LoadRootRelative(Register destination, int32_t offset) = 0;
 
   virtual void LoadRoot(Register destination, Heap::RootListIndex index) = 0;
 
+  static int32_t RootRegisterOffset(Heap::RootListIndex root_index);
+  static int32_t RootRegisterOffsetForExternalReferenceIndex(
+      int reference_index);
+
+  static int32_t RootRegisterOffsetForBuiltinIndex(int builtin_index);
+
+  static intptr_t RootRegisterOffsetForExternalReference(
+      Isolate* isolate, const ExternalReference& reference);
+
+  // An address is addressable through kRootRegister if it is located within
+  // [isolate, roots_ + root_register_addressable_end_offset[.
+  static bool IsAddressableThroughRootRegister(
+      Isolate* isolate, const ExternalReference& reference);
+
  protected:
-  TurboAssemblerBase(Isolate* isolate, void* buffer, int buffer_size,
-                     CodeObjectRequired create_code_object);
-  TurboAssemblerBase(IsolateData isolate_data, void* buffer, int buffer_size);
+  TurboAssemblerBase(Isolate* isolate, const Options& options, void* buffer,
+                     int buffer_size, CodeObjectRequired create_code_object);
 
   Isolate* const isolate_ = nullptr;
 

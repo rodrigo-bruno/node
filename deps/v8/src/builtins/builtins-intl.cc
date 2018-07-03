@@ -33,7 +33,7 @@ namespace internal {
 BUILTIN(StringPrototypeToUpperCaseIntl) {
   HandleScope scope(isolate);
   TO_THIS_STRING(string, "String.prototype.toUpperCase");
-  string = String::Flatten(string);
+  string = String::Flatten(isolate, string);
   return ConvertCase(string, true, isolate);
 }
 
@@ -53,16 +53,19 @@ BUILTIN(StringPrototypeNormalizeIntl) {
     ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, form,
                                        Object::ToString(isolate, form_input));
 
-    if (String::Equals(form, isolate->factory()->NFC_string())) {
+    if (String::Equals(isolate, form, isolate->factory()->NFC_string())) {
       form_name = "nfc";
       form_mode = UNORM2_COMPOSE;
-    } else if (String::Equals(form, isolate->factory()->NFD_string())) {
+    } else if (String::Equals(isolate, form,
+                              isolate->factory()->NFD_string())) {
       form_name = "nfc";
       form_mode = UNORM2_DECOMPOSE;
-    } else if (String::Equals(form, isolate->factory()->NFKC_string())) {
+    } else if (String::Equals(isolate, form,
+                              isolate->factory()->NFKC_string())) {
       form_name = "nfkc";
       form_mode = UNORM2_COMPOSE;
-    } else if (String::Equals(form, isolate->factory()->NFKD_string())) {
+    } else if (String::Equals(isolate, form,
+                              isolate->factory()->NFKD_string())) {
       form_name = "nfkc";
       form_mode = UNORM2_DECOMPOSE;
     } else {
@@ -75,7 +78,7 @@ BUILTIN(StringPrototypeNormalizeIntl) {
   }
 
   int length = string->length();
-  string = String::Flatten(string);
+  string = String::Flatten(isolate, string);
   icu::UnicodeString result;
   std::unique_ptr<uc16[]> sap;
   UErrorCode status = U_ZERO_ERROR;
@@ -440,12 +443,8 @@ BUILTIN(NumberFormatPrototypeFormatToParts) {
   HandleScope handle_scope(isolate);
   CHECK_RECEIVER(JSObject, number_format_holder, method);
 
-  Handle<Symbol> marker = isolate->factory()->intl_initialized_marker_symbol();
-  Handle<Object> tag =
-      JSReceiver::GetDataProperty(number_format_holder, marker);
-  Handle<String> expected_tag =
-      isolate->factory()->NewStringFromStaticChars("numberformat");
-  if (!(tag->IsString() && String::cast(*tag)->Equals(*expected_tag))) {
+  if (!Intl::IsObjectOfType(isolate, number_format_holder,
+                            Intl::Type::kNumberFormat)) {
     THROW_NEW_ERROR_RETURN_FAILURE(
         isolate,
         NewTypeError(MessageTemplate::kIncompatibleMethodReceiver,
@@ -475,10 +474,8 @@ BUILTIN(DateTimeFormatPrototypeFormatToParts) {
   CHECK_RECEIVER(JSObject, date_format_holder, method);
   Factory* factory = isolate->factory();
 
-  Handle<Symbol> marker = factory->intl_initialized_marker_symbol();
-  Handle<Object> tag = JSReceiver::GetDataProperty(date_format_holder, marker);
-  Handle<String> expected_tag = factory->NewStringFromStaticChars("dateformat");
-  if (!(tag->IsString() && String::cast(*tag)->Equals(*expected_tag))) {
+  if (!Intl::IsObjectOfType(isolate, date_format_holder,
+                            Intl::Type::kDateTimeFormat)) {
     THROW_NEW_ERROR_RETURN_FAILURE(
         isolate, NewTypeError(MessageTemplate::kIncompatibleMethodReceiver,
                               factory->NewStringFromAsciiChecked(method),

@@ -22,7 +22,7 @@ namespace internal {
 
 void Builtins::Generate_Adaptor(MacroAssembler* masm, Address address,
                                 ExitFrameType exit_frame_type) {
-  __ li(s2, ExternalReference::Create(address));
+  __ li(kJavaScriptCallExtraArg1Register, ExternalReference::Create(address));
   if (exit_frame_type == BUILTIN_EXIT) {
     __ Jump(BUILTIN_CODE(masm->isolate(), AdaptorWithBuiltinExitFrame),
             RelocInfo::CODE_TARGET);
@@ -31,58 +31,6 @@ void Builtins::Generate_Adaptor(MacroAssembler* masm, Address address,
     __ Jump(BUILTIN_CODE(masm->isolate(), AdaptorWithExitFrame),
             RelocInfo::CODE_TARGET);
   }
-}
-
-namespace {
-
-void AdaptorWithExitFrameType(MacroAssembler* masm,
-                              Builtins::ExitFrameType exit_frame_type) {
-  // ----------- S t a t e -------------
-  //  -- a0                 : number of arguments excluding receiver
-  //  -- a1                 : target
-  //  -- a3                 : new.target
-  //  -- s2                 : entry point
-  //  -- sp[0]              : last argument
-  //  -- ...
-  //  -- sp[8 * (argc - 1)] : first argument
-  //  -- sp[8 * agrc]       : receiver
-  // -----------------------------------
-  __ AssertFunction(a1);
-
-  // Make sure we operate in the context of the called function (for example
-  // ConstructStubs implemented in C++ will be run in the context of the caller
-  // instead of the callee, due to the way that [[Construct]] is defined for
-  // ordinary functions).
-  __ Ld(cp, FieldMemOperand(a1, JSFunction::kContextOffset));
-
-  // CEntry expects a0 to contain the number of arguments including the
-  // receiver and the extra arguments.
-  __ Daddu(a0, a0, BuiltinExitFrameConstants::kNumExtraArgsWithReceiver);
-
-  // Insert extra arguments.
-  __ PushRoot(Heap::kTheHoleValueRootIndex);  // Padding.
-  __ SmiTag(a0);
-  __ Push(a0, a1, a3);
-  __ SmiUntag(a0);
-
-  // Jump to the C entry runtime stub directly here instead of using
-  // JumpToExternalReference. We have already loaded entry point to s2
-  // in Generate_adaptor.
-  __ mov(a1, s2);
-  Handle<Code> code =
-      CodeFactory::CEntry(masm->isolate(), 1, kDontSaveFPRegs, kArgvOnStack,
-                          exit_frame_type == Builtins::BUILTIN_EXIT);
-  __ Jump(code, RelocInfo::CODE_TARGET, al, zero_reg, Operand(zero_reg),
-          PROTECT);
-}
-}  // namespace
-
-void Builtins::Generate_AdaptorWithExitFrame(MacroAssembler* masm) {
-  AdaptorWithExitFrameType(masm, EXIT);
-}
-
-void Builtins::Generate_AdaptorWithBuiltinExitFrame(MacroAssembler* masm) {
-  AdaptorWithExitFrameType(masm, BUILTIN_EXIT);
 }
 
 void Builtins::Generate_InternalArrayConstructor(MacroAssembler* masm) {
@@ -855,16 +803,12 @@ void Builtins::Generate_InterpreterEntryTrampoline(MacroAssembler* masm) {
   FrameScope frame_scope(masm, StackFrame::MANUAL);
   __ PushStandardFrame(closure);
 
-  // Get the bytecode array from the function object (or from the DebugInfo if
-  // it is present) and load it into kInterpreterBytecodeArrayRegister.
-  Label maybe_load_debug_bytecode_array, bytecode_array_loaded;
+  // Get the bytecode array from the function object and load it into
+  // kInterpreterBytecodeArrayRegister.
   __ Ld(a0, FieldMemOperand(closure, JSFunction::kSharedFunctionInfoOffset));
   __ Ld(kInterpreterBytecodeArrayRegister,
         FieldMemOperand(a0, SharedFunctionInfo::kFunctionDataOffset));
   GetSharedFunctionInfoBytecode(masm, kInterpreterBytecodeArrayRegister, a4);
-  __ Ld(a4, FieldMemOperand(a0, SharedFunctionInfo::kDebugInfoOffset));
-  __ JumpIfNotSmi(a4, &maybe_load_debug_bytecode_array);
-  __ bind(&bytecode_array_loaded);
 
   // Increment invocation count for the function.
   __ Lw(a4, FieldMemOperand(feedback_vector,
@@ -979,36 +923,6 @@ void Builtins::Generate_InterpreterEntryTrampoline(MacroAssembler* masm) {
   // The return value is in v0.
   LeaveInterpreterFrame(masm, t0);
   __ Jump(ra);
-
-  // Load debug copy of the bytecode array if it exists.
-  // kInterpreterBytecodeArrayRegister is already loaded with
-  // SharedFunctionInfo::kFunctionDataOffset.
-  __ bind(&maybe_load_debug_bytecode_array);
-  __ Ld(a5, FieldMemOperand(a4, DebugInfo::kDebugBytecodeArrayOffset));
-  __ JumpIfRoot(a5, Heap::kUndefinedValueRootIndex, &bytecode_array_loaded);
-
-  __ mov(kInterpreterBytecodeArrayRegister, a5);
-  __ Ld(a5, FieldMemOperand(a4, DebugInfo::kFlagsOffset));
-  __ SmiUntag(a5);
-  __ And(a5, a5, Operand(DebugInfo::kDebugExecutionMode));
-
-  ExternalReference debug_execution_mode =
-      ExternalReference::debug_execution_mode_address(masm->isolate());
-  __ li(a4, Operand(debug_execution_mode));
-  __ Lb(a4, MemOperand(a4, kLeastSignificantByteInInt32Offset));
-  STATIC_ASSERT(static_cast<int>(DebugInfo::kDebugExecutionMode) ==
-                static_cast<int>(DebugInfo::kSideEffects));
-  __ Branch(&bytecode_array_loaded, eq, a4, Operand(a5));
-
-  __ push(closure);
-  __ push(feedback_vector);
-  __ push(kInterpreterBytecodeArrayRegister);
-  __ push(closure);
-  __ CallRuntime(Runtime::kDebugApplyInstrumentation);
-  __ pop(kInterpreterBytecodeArrayRegister);
-  __ pop(feedback_vector);
-  __ pop(closure);
-  __ Branch(&bytecode_array_loaded);
 }
 
 static void Generate_StackOverflowCheck(MacroAssembler* masm, Register num_args,
@@ -1685,7 +1599,20 @@ void Builtins::Generate_CallOrConstructVarargs(MacroAssembler* masm,
   //  -- a4 : len (number of elements to push from args)
   //  -- a3 : new.target (for [[Construct]])
   // -----------------------------------
-  __ AssertFixedArray(a2);
+  if (masm->emit_debug_code()) {
+    // Allow a2 to be a FixedArray, or a FixedDoubleArray if a4 == 0.
+    Label ok, fail;
+    __ AssertNotSmi(a2);
+    __ GetObjectType(a2, t8, t8);
+    __ Branch(&ok, eq, t8, Operand(FIXED_ARRAY_TYPE));
+    __ Branch(&fail, ne, t8, Operand(FIXED_DOUBLE_ARRAY_TYPE));
+    __ Branch(&ok, eq, a4, Operand(zero_reg));
+    // Fall through.
+    __ bind(&fail);
+    __ Abort(AbortReason::kOperandIsNotAFixedArray);
+
+    __ bind(&ok);
+  }
 
   Register args = a2;
   Register len = a4;
@@ -2219,17 +2146,6 @@ void Builtins::Generate_Construct(MacroAssembler* masm) {
           RelocInfo::CODE_TARGET);
 }
 
-// static
-void Builtins::Generate_Abort(MacroAssembler* masm) {
-  // ----------- S t a t e -------------
-  //  -- a0 : message_id as Smi
-  //  -- ra : return address
-  // -----------------------------------
-  __ Push(a0);
-  __ Move(cp, Smi::kZero);
-  __ TailCallRuntime(Runtime::kAbort);
-}
-
 void Builtins::Generate_ArgumentsAdaptorTrampoline(MacroAssembler* masm) {
   // State setup as expected by MacroAssembler::InvokePrologue.
   // ----------- S t a t e -------------
@@ -2368,6 +2284,9 @@ void Builtins::Generate_ArgumentsAdaptorTrampoline(MacroAssembler* masm) {
 }
 
 void Builtins::Generate_WasmCompileLazy(MacroAssembler* masm) {
+  // The function index was put in t0 by the jump table trampoline.
+  // Convert to Smi for the runtime call
+  __ SmiTag(t0);
   {
     TrapOnAbortScope trap_on_abort_scope(masm);  // Avoid calls to Abort.
     FrameScope scope(masm, StackFrame::WASM_COMPILE_LAZY);
@@ -2382,8 +2301,9 @@ void Builtins::Generate_WasmCompileLazy(MacroAssembler* masm) {
     __ MultiPush(gp_regs);
     __ MultiPushFPU(fp_regs);
 
-    // Pass the WASM instance as an explicit argument to WasmCompileLazy.
-    __ push(kWasmInstanceRegister);
+    // Pass instance and function index as an explicit arguments to the runtime
+    // function.
+    __ Push(kWasmInstanceRegister, t0);
     // Load the correct CEntry builtin from the instance object.
     __ Ld(a2, FieldMemOperand(kWasmInstanceRegister,
                               WasmInstanceObject::kCEntryStubOffset));

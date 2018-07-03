@@ -154,6 +154,8 @@ namespace compiler {
   V(IA32I32x4ExtractLane)          \
   V(SSEI32x4ReplaceLane)           \
   V(AVXI32x4ReplaceLane)           \
+  V(IA32I32x4SConvertI16x8Low)     \
+  V(IA32I32x4SConvertI16x8High)    \
   V(IA32I32x4Neg)                  \
   V(SSEI32x4Shl)                   \
   V(AVXI32x4Shl)                   \
@@ -179,6 +181,8 @@ namespace compiler {
   V(AVXI32x4GtS)                   \
   V(SSEI32x4GeS)                   \
   V(AVXI32x4GeS)                   \
+  V(IA32I32x4UConvertI16x8Low)     \
+  V(IA32I32x4UConvertI16x8High)    \
   V(SSEI32x4ShrU)                  \
   V(AVXI32x4ShrU)                  \
   V(SSEI32x4MinU)                  \
@@ -193,6 +197,8 @@ namespace compiler {
   V(IA32I16x8ExtractLane)          \
   V(SSEI16x8ReplaceLane)           \
   V(AVXI16x8ReplaceLane)           \
+  V(IA32I16x8SConvertI8x16Low)     \
+  V(IA32I16x8SConvertI8x16High)    \
   V(IA32I16x8Neg)                  \
   V(SSEI16x8Shl)                   \
   V(AVXI16x8Shl)                   \
@@ -224,6 +230,8 @@ namespace compiler {
   V(AVXI16x8GtS)                   \
   V(SSEI16x8GeS)                   \
   V(AVXI16x8GeS)                   \
+  V(IA32I16x8UConvertI8x16Low)     \
+  V(IA32I16x8UConvertI8x16High)    \
   V(SSEI16x8ShrU)                  \
   V(AVXI16x8ShrU)                  \
   V(SSEI16x8UConvertI32x4)         \
@@ -303,12 +311,30 @@ namespace compiler {
   V(IA32S8x16Shuffle)              \
   V(IA32S32x4Swizzle)              \
   V(IA32S32x4Shuffle)              \
-  V(SSES16x8Blend)                 \
-  V(AVXS16x8Blend)                 \
+  V(IA32S16x8Blend)                \
   V(IA32S16x8HalfShuffle1)         \
   V(IA32S16x8HalfShuffle2)         \
-  V(SSES8x16Alignr)                \
-  V(AVXS8x16Alignr)                \
+  V(IA32S8x16Alignr)               \
+  V(SSES16x8UnzipHigh)             \
+  V(AVXS16x8UnzipHigh)             \
+  V(SSES16x8UnzipLow)              \
+  V(AVXS16x8UnzipLow)              \
+  V(SSES8x16UnzipHigh)             \
+  V(AVXS8x16UnzipHigh)             \
+  V(SSES8x16UnzipLow)              \
+  V(AVXS8x16UnzipLow)              \
+  V(IA32S64x2UnpackHigh)           \
+  V(IA32S32x4UnpackHigh)           \
+  V(IA32S16x8UnpackHigh)           \
+  V(IA32S8x16UnpackHigh)           \
+  V(IA32S64x2UnpackLow)            \
+  V(IA32S32x4UnpackLow)            \
+  V(IA32S16x8UnpackLow)            \
+  V(IA32S8x16UnpackLow)            \
+  V(SSES8x16TransposeLow)          \
+  V(AVXS8x16TransposeLow)          \
+  V(SSES8x16TransposeHigh)         \
+  V(AVXS8x16TransposeHigh)         \
   V(IA32S1x4AnyTrue)               \
   V(IA32S1x4AllTrue)               \
   V(IA32S1x8AnyTrue)               \

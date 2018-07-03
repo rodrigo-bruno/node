@@ -377,28 +377,28 @@ C_REGISTERS(DECLARE_C_REGISTER)
 class Operand BASE_EMBEDDED {
  public:
   // immediate
-  INLINE(explicit Operand(intptr_t immediate,
-                          RelocInfo::Mode rmode = RelocInfo::NONE)
-         : rmode_(rmode)) {
+  V8_INLINE explicit Operand(intptr_t immediate,
+                             RelocInfo::Mode rmode = RelocInfo::NONE)
+      : rmode_(rmode) {
     value_.immediate = immediate;
   }
-  INLINE(static Operand Zero()) { return Operand(static_cast<intptr_t>(0)); }
-  INLINE(explicit Operand(const ExternalReference& f)
-         : rmode_(RelocInfo::EXTERNAL_REFERENCE)) {
+  V8_INLINE static Operand Zero() { return Operand(static_cast<intptr_t>(0)); }
+  V8_INLINE explicit Operand(const ExternalReference& f)
+      : rmode_(RelocInfo::EXTERNAL_REFERENCE) {
     value_.immediate = static_cast<intptr_t>(f.address());
   }
   explicit Operand(Handle<HeapObject> handle);
-  INLINE(explicit Operand(Smi* value) : rmode_(RelocInfo::NONE)) {
+  V8_INLINE explicit Operand(Smi* value) : rmode_(RelocInfo::NONE) {
     value_.immediate = reinterpret_cast<intptr_t>(value);
   }
   // rm
-  INLINE(explicit Operand(Register rm));
+  V8_INLINE explicit Operand(Register rm);
 
   static Operand EmbeddedNumber(double number);  // Smi or HeapNumber.
   static Operand EmbeddedCode(CodeStub* stub);
 
   // Return true if this is a register operand.
-  INLINE(bool is_reg() const) { return rm_.is_valid(); }
+  V8_INLINE bool is_reg() const { return rm_.is_valid(); }
 
   bool must_output_reloc_info(const Assembler* assembler) const;
 
@@ -504,9 +504,7 @@ class Assembler : public AssemblerBase {
   // buffer for code generation and assumes its size to be buffer_size. If the
   // buffer is too small, a fatal error occurs. No deallocation of the buffer is
   // done upon destruction of the assembler.
-  Assembler(Isolate* isolate, void* buffer, int buffer_size)
-      : Assembler(IsolateData(isolate), buffer, buffer_size) {}
-  Assembler(IsolateData isolate_data, void* buffer, int buffer_size);
+  Assembler(const Options& options, void* buffer, int buffer_size);
   virtual ~Assembler() {}
 
   // GetCode emits any pending (non-emitted) code and fills the descriptor
@@ -553,29 +551,29 @@ class Assembler : public AssemblerBase {
   // The high 8 bits are set to zero.
   void label_at_put(Label* L, int at_offset);
 
-  INLINE(static bool IsConstantPoolLoadStart(
-      Address pc, ConstantPoolEntry::Access* access = nullptr));
-  INLINE(static bool IsConstantPoolLoadEnd(
-      Address pc, ConstantPoolEntry::Access* access = nullptr));
-  INLINE(static int GetConstantPoolOffset(Address pc,
-                                          ConstantPoolEntry::Access access,
-                                          ConstantPoolEntry::Type type));
-  INLINE(void PatchConstantPoolAccessInstruction(
+  V8_INLINE static bool IsConstantPoolLoadStart(
+      Address pc, ConstantPoolEntry::Access* access = nullptr);
+  V8_INLINE static bool IsConstantPoolLoadEnd(
+      Address pc, ConstantPoolEntry::Access* access = nullptr);
+  V8_INLINE static int GetConstantPoolOffset(Address pc,
+                                             ConstantPoolEntry::Access access,
+                                             ConstantPoolEntry::Type type);
+  V8_INLINE void PatchConstantPoolAccessInstruction(
       int pc_offset, int offset, ConstantPoolEntry::Access access,
-      ConstantPoolEntry::Type type));
+      ConstantPoolEntry::Type type);
 
   // Return the address in the constant pool of the code target address used by
   // the branch/call instruction at pc, or the object in a mov.
-  INLINE(static Address target_constant_pool_address_at(
+  V8_INLINE static Address target_constant_pool_address_at(
       Address pc, Address constant_pool, ConstantPoolEntry::Access access,
-      ConstantPoolEntry::Type type));
+      ConstantPoolEntry::Type type);
 
   // Read/Modify the code target address in the branch/call instruction at pc.
   // The isolate argument is unused (and may be nullptr) when skipping flushing.
-  INLINE(static Address target_address_at(Address pc, Address constant_pool));
-  INLINE(static void set_target_address_at(
+  V8_INLINE static Address target_address_at(Address pc, Address constant_pool);
+  V8_INLINE static void set_target_address_at(
       Address pc, Address constant_pool, Address target,
-      ICacheFlushMode icache_flush_mode = FLUSH_ICACHE_IF_NEEDED));
+      ICacheFlushMode icache_flush_mode = FLUSH_ICACHE_IF_NEEDED);
 
   // Return the code target address at a call site from the return address
   // of that call in the instruction stream.
@@ -583,7 +581,7 @@ class Assembler : public AssemblerBase {
 
   // Given the address of the beginning of a call, return the address
   // in the instruction stream that the call will return to.
-  INLINE(static Address return_address_from_call_start(Address pc));
+  V8_INLINE static Address return_address_from_call_start(Address pc);
 
   // This sets the branch destination.
   // This is for calls and branches within generated code.
@@ -1455,10 +1453,10 @@ class Assembler : public AssemblerBase {
   void RecordRelocInfo(RelocInfo::Mode rmode, intptr_t data = 0);
   ConstantPoolEntry::Access ConstantPoolAddEntry(RelocInfo::Mode rmode,
                                                  intptr_t value) {
-    bool sharing_ok =
-        RelocInfo::IsNone(rmode) ||
-        (!serializer_enabled() && RelocInfo::IsShareableRelocMode(rmode) &&
-         !is_constant_pool_entry_sharing_blocked());
+    bool sharing_ok = RelocInfo::IsNone(rmode) ||
+                      (!options().record_reloc_info_for_serialization &&
+                       RelocInfo::IsShareableRelocMode(rmode) &&
+                       !is_constant_pool_entry_sharing_blocked());
     return constant_pool_builder_.AddEntry(pc_offset(), value, sharing_ok);
   }
   ConstantPoolEntry::Access ConstantPoolAddEntry(Double value) {
@@ -1647,7 +1645,7 @@ class EnsureSpace BASE_EMBEDDED {
 
 class PatchingAssembler : public Assembler {
  public:
-  PatchingAssembler(IsolateData isolate_data, byte* address, int instructions);
+  PatchingAssembler(const Options& options, byte* address, int instructions);
   ~PatchingAssembler();
 };
 

@@ -1206,7 +1206,7 @@ void TestParserSyncWithFlags(i::Handle<i::String> source,
     // Extract exception from the parser.
     CHECK(isolate->has_pending_exception());
     i::Handle<i::JSObject> exception_handle(
-        i::JSObject::cast(isolate->pending_exception()));
+        i::JSObject::cast(isolate->pending_exception()), isolate);
     i::Handle<i::String> message_string = i::Handle<i::String>::cast(
         i::JSReceiver::GetProperty(isolate, exception_handle, "message")
             .ToHandleChecked());
@@ -1235,7 +1235,7 @@ void TestParserSyncWithFlags(i::Handle<i::String> source,
     if (test_preparser && !ignore_error_msg) {
       i::Handle<i::String> preparser_message =
           pending_error_handler.FormatErrorMessageForTest(CcTest::i_isolate());
-      if (!i::String::Equals(message_string, preparser_message)) {
+      if (!i::String::Equals(isolate, message_string, preparser_message)) {
         FATAL(
             "Expected parser and preparser to produce the same error on:\n"
             "\t%s\n"
@@ -6194,7 +6194,7 @@ TEST(BasicImportExportParsing) {
       info.set_module();
       if (!i::parsing::ParseProgram(&info, isolate)) {
         i::Handle<i::JSObject> exception_handle(
-            i::JSObject::cast(isolate->pending_exception()));
+            i::JSObject::cast(isolate->pending_exception()), isolate);
         i::Handle<i::String> message_string = i::Handle<i::String>::cast(
             i::JSReceiver::GetProperty(isolate, exception_handle, "message")
                 .ToHandleChecked());
@@ -8693,6 +8693,14 @@ TEST(AsyncAwait) {
 
     "function* g() { var f = async(yield); }",
     "function* g() { var f = async(x = yield); }",
+
+    // v8:7817 assert that `await` is still allowed in the body of an arrow fn
+    // within formal parameters
+    "async(a = a => { var await = 1; return 1; }) => a()",
+    "async(a = await => 1); async(a) => 1",
+    "(async(a = await => 1), async(a) => 1)",
+    "async(a = await => 1, b = async() => 1);",
+
     nullptr
   };
   // clang-format on
@@ -8839,6 +8847,12 @@ TEST(AsyncAwaitErrors) {
     "async(...a = b) => b",
     "async(...a,) => b",
     "async(...a, b) => b",
+
+    // v8:7817 assert that `await` is an invalid identifier in arrow formal
+    // parameters nested within an async arrow function
+    "async(a = await => 1) => a",
+    "async(a = (await) => 1) => a",
+    "async(a = (...await) => 1) => a",
     nullptr
   };
 

@@ -69,9 +69,7 @@ class Code : public HeapObject {
   // off-heap instruction stream rather than the on-heap trampoline located
   // at instruction_start.
   inline int InstructionSize() const;
-#ifdef V8_EMBEDDED_BUILTINS
   int OffHeapInstructionSize() const;
-#endif
 
   // [relocation_info]: Code relocation information
   DECL_ACCESSORS(relocation_info, ByteArray)
@@ -184,6 +182,10 @@ class Code : public HeapObject {
   // Use GetBuiltinCatchPrediction to access this.
   inline void set_is_exception_caught(bool flag);
 
+  // [is_off_heap_trampoline]: For kind BUILTIN tells whether
+  // this is a trampoline to an off-heap builtin.
+  inline bool is_off_heap_trampoline() const;
+
   // [constant_pool]: The constant pool for this function.
   inline Address constant_pool() const;
 
@@ -205,7 +207,8 @@ class Code : public HeapObject {
   // Initialize the flags field. Similar to clear_padding above this ensure that
   // the snapshot content is deterministic.
   inline void initialize_flags(Kind kind, bool has_unwinding_info,
-                               bool is_turbofanned, int stack_slots);
+                               bool is_turbofanned, int stack_slots,
+                               bool is_off_heap_trampoline);
 
   // Convert a target address into a code object.
   static inline Code* GetCodeFromTargetAddress(Address address);
@@ -223,9 +226,7 @@ class Code : public HeapObject {
   // this differs from instruction_start (which would point to the off-heap
   // trampoline instead).
   inline Address InstructionStart() const;
-#ifdef V8_EMBEDDED_BUILTINS
   Address OffHeapInstructionStart() const;
-#endif
 
   // Returns the address right after the last instruction.
   inline Address raw_instruction_end() const;
@@ -234,9 +235,7 @@ class Code : public HeapObject {
   // objects this differs from instruction_end (which would point to the
   // off-heap trampoline instead).
   inline Address InstructionEnd() const;
-#ifdef V8_EMBEDDED_BUILTINS
   Address OffHeapInstructionEnd() const;
-#endif
 
   // Returns the size of the instructions, padding, relocation and unwinding
   // information.
@@ -342,12 +341,11 @@ class Code : public HeapObject {
 
 #ifdef DEBUG
   enum VerifyMode { kNoContextSpecificPointers, kNoContextRetainingPointers };
-  void VerifyEmbeddedObjects(VerifyMode mode = kNoContextRetainingPointers);
+  void VerifyEmbeddedObjects(Isolate* isolate,
+                             VerifyMode mode = kNoContextRetainingPointers);
 #endif  // DEBUG
 
-#ifdef V8_EMBEDDED_BUILTINS
-  bool IsProcessIndependent(Isolate* isolate);
-#endif
+  bool IsIsolateIndependent(Isolate* isolate);
 
   inline bool CanContainWeakObjects();
 
@@ -417,11 +415,13 @@ class Code : public HeapObject {
   V(HasUnwindingInfoField, bool, 1, _) \
   V(KindField, Kind, 5, _)             \
   V(IsTurbofannedField, bool, 1, _)    \
-  V(StackSlotsField, int, 24, _)
+  V(StackSlotsField, int, 24, _)       \
+  V(IsOffHeapTrampoline, bool, 1, _)
   DEFINE_BIT_FIELDS(CODE_FLAGS_BIT_FIELDS)
 #undef CODE_FLAGS_BIT_FIELDS
   static_assert(NUMBER_OF_KINDS <= KindField::kMax, "Code::KindField size");
-  static_assert(StackSlotsField::kNext <= 32, "Code::flags field exhausted");
+  static_assert(IsOffHeapTrampoline::kNext <= 32,
+                "Code::flags field exhausted");
 
   // KindSpecificFlags layout (STUB, BUILTIN and OPTIMIZED_FUNCTION)
 #define CODE_KIND_SPECIFIC_FLAGS_BIT_FIELDS(V, _) \
@@ -765,10 +765,10 @@ class BytecodeArray : public FixedArrayBase {
   int SourcePosition(int offset);
   int SourceStatementPosition(int offset);
 
-  DECL_PRINTER(BytecodeArray)
+  DECL_PRINTER_WITH_ISOLATE(BytecodeArray)
   DECL_VERIFIER(BytecodeArray)
 
-  void Disassemble(std::ostream& os);
+  void Disassemble(Isolate* isolate, std::ostream& os);
 
   void CopyBytecodesTo(BytecodeArray* to);
 

@@ -86,7 +86,7 @@ class BreakLocation {
     return result;
   }
 
-  bool HasBreakPoint(Handle<DebugInfo> debug_info) const;
+  bool HasBreakPoint(Isolate* isolate, Handle<DebugInfo> debug_info) const;
 
   inline int position() const { return position_; }
 
@@ -170,7 +170,7 @@ class BreakIterator {
 // weak handles to avoid a debug info object to keep a function alive.
 class DebugInfoListNode {
  public:
-  explicit DebugInfoListNode(DebugInfo* debug_info);
+  DebugInfoListNode(Isolate* isolate, DebugInfo* debug_info);
   ~DebugInfoListNode();
 
   DebugInfoListNode* next() { return next_; }
@@ -295,7 +295,7 @@ class Debug {
                                                 int position);
 
   static Handle<Object> GetSourceBreakLocations(
-      Handle<SharedFunctionInfo> shared);
+      Isolate* isolate, Handle<SharedFunctionInfo> shared);
 
   // Check whether a global object is the debug global object.
   bool IsDebugGlobal(JSGlobalObject* global);
@@ -313,7 +313,9 @@ class Debug {
   // change. stack_changed is true if after editing script on pause stack is
   // changed and client should request stack trace again.
   bool SetScriptSource(Handle<Script> script, Handle<String> source,
-                       bool preview, bool* stack_changed);
+                       bool preview, debug::LiveEditResult* result);
+
+  int GetFunctionDebuggingId(Handle<JSFunction> function);
 
   // Threading support.
   char* ArchiveDebug(char* to);
@@ -325,9 +327,6 @@ class Debug {
   bool CheckExecutionState() {
     return is_active() && !debug_context().is_null() && break_id() != 0;
   }
-
-  // Apply proper instrumentation depends on debug_execution_mode.
-  void ApplyInstrumentation(Handle<SharedFunctionInfo> shared);
 
   void StartSideEffectCheckMode();
   void StopSideEffectCheckMode();
@@ -347,11 +346,6 @@ class Debug {
         base::Relaxed_Load(&thread_local_.current_debug_scope_));
   }
   inline Handle<Context> debug_context() { return debug_context_; }
-
-  void set_live_edit_enabled(bool v) { live_edit_enabled_ = v; }
-  bool live_edit_enabled() const {
-    return FLAG_enable_liveedit && live_edit_enabled_;
-  }
 
   inline bool is_active() const { return is_active_; }
   inline bool is_loaded() const { return !debug_context_.is_null(); }
@@ -383,10 +377,6 @@ class Debug {
     return reinterpret_cast<Address>(&hook_on_function_call_);
   }
 
-  Address last_step_action_address() {
-    return reinterpret_cast<Address>(&thread_local_.last_step_action_);
-  }
-
   Address suspended_generator_address() {
     return reinterpret_cast<Address>(&thread_local_.suspended_generator_);
   }
@@ -410,6 +400,7 @@ class Debug {
   explicit Debug(Isolate* isolate);
   ~Debug();
 
+  void UpdateDebugInfosForExecutionMode();
   void UpdateState();
   void UpdateHookOnFunctionCall();
   void RemoveDebugDelegate();
@@ -467,7 +458,7 @@ class Debug {
   bool CheckBreakPoint(Handle<BreakPoint> break_point, bool is_break_at_entry);
   MaybeHandle<Object> CallFunction(const char* name, int argc,
                                    Handle<Object> args[],
-                                   bool catch_exceptions = true);
+                                   MaybeHandle<Object>* maybe_exception);
 
   inline void AssertDebugContext() {
     DCHECK(in_debug_scope());
@@ -477,8 +468,10 @@ class Debug {
 
   void PrintBreakLocation();
 
+  void ClearAllDebuggerHints();
+
   // Wraps logic for clearing and maybe freeing all debug infos.
-  typedef std::function<bool(Handle<DebugInfo>)> DebugInfoClearFunction;
+  typedef std::function<void(Handle<DebugInfo>)> DebugInfoClearFunction;
   void ClearAllDebugInfos(DebugInfoClearFunction clear_function);
 
   void RemoveBreakInfoAndMaybeFree(Handle<DebugInfo> debug_info);
@@ -499,8 +492,8 @@ class Debug {
   bool hook_on_function_call_;
   // Suppress debug events.
   bool is_suppressed_;
-  // LiveEdit is enabled.
-  bool live_edit_enabled_;
+  // Running liveedit.
+  bool running_live_edit_ = false;
   // Do not trigger debug break events.
   bool break_disabled_;
   // Do not break on break points.

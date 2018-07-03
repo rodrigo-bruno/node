@@ -31,10 +31,10 @@ class JSSet : public JSCollection {
   DECL_CAST(JSSet)
 
   static void Initialize(Handle<JSSet> set, Isolate* isolate);
-  static void Clear(Handle<JSSet> set);
+  static void Clear(Isolate* isolate, Handle<JSSet> set);
 
   // Dispatched behavior.
-  DECL_PRINTER(JSSet)
+  DECL_PRINTER_WITH_ISOLATE(JSSet)
   DECL_VERIFIER(JSSet)
 
  private:
@@ -45,7 +45,7 @@ class JSSetIterator
     : public OrderedHashTableIterator<JSSetIterator, OrderedHashSet> {
  public:
   // Dispatched behavior.
-  DECL_PRINTER(JSSetIterator)
+  DECL_PRINTER_WITH_ISOLATE(JSSetIterator)
   DECL_VERIFIER(JSSetIterator)
 
   DECL_CAST(JSSetIterator)
@@ -60,10 +60,10 @@ class JSMap : public JSCollection {
   DECL_CAST(JSMap)
 
   static void Initialize(Handle<JSMap> map, Isolate* isolate);
-  static void Clear(Handle<JSMap> map);
+  static void Clear(Isolate* isolate, Handle<JSMap> map);
 
   // Dispatched behavior.
-  DECL_PRINTER(JSMap)
+  DECL_PRINTER_WITH_ISOLATE(JSMap)
   DECL_VERIFIER(JSMap)
 
  private:
@@ -74,7 +74,7 @@ class JSMapIterator
     : public OrderedHashTableIterator<JSMapIterator, OrderedHashMap> {
  public:
   // Dispatched behavior.
-  DECL_PRINTER(JSMapIterator)
+  DECL_PRINTER_WITH_ISOLATE(JSMapIterator)
   DECL_VERIFIER(JSMapIterator)
 
   DECL_CAST(JSMapIterator)
@@ -125,7 +125,7 @@ class JSWeakMap : public JSWeakCollection {
   DECL_CAST(JSWeakMap)
 
   // Dispatched behavior.
-  DECL_PRINTER(JSWeakMap)
+  DECL_PRINTER_WITH_ISOLATE(JSWeakMap)
   DECL_VERIFIER(JSWeakMap)
 
  private:
@@ -138,7 +138,7 @@ class JSWeakSet : public JSWeakCollection {
   DECL_CAST(JSWeakSet)
 
   // Dispatched behavior.
-  DECL_PRINTER(JSWeakSet)
+  DECL_PRINTER_WITH_ISOLATE(JSWeakSet)
   DECL_VERIFIER(JSWeakSet)
 
  private:

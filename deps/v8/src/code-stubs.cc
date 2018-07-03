@@ -88,14 +88,14 @@ void CodeStub::RecordCodeGeneration(Handle<Code> code) {
   Counters* counters = isolate()->counters();
   counters->total_stubs_code_size()->Increment(code->raw_instruction_size());
 #ifdef DEBUG
-  code->VerifyEmbeddedObjects();
+  code->VerifyEmbeddedObjects(isolate());
 #endif
 }
 
 
 void CodeStub::DeleteStubFromCacheForTesting() {
   Heap* heap = isolate_->heap();
-  Handle<SimpleNumberDictionary> dict(heap->code_stubs());
+  Handle<SimpleNumberDictionary> dict(heap->code_stubs(), isolate());
   int entry = dict->FindEntry(GetKey());
   DCHECK_NE(SimpleNumberDictionary::kNotFound, entry);
   dict = SimpleNumberDictionary::DeleteEntry(dict, entry);
@@ -106,15 +106,16 @@ Handle<Code> PlatformCodeStub::GenerateCode() {
   Factory* factory = isolate()->factory();
 
   // Generate the new code.
-  MacroAssembler masm(isolate(), nullptr, 256, CodeObjectRequired::kYes);
+  // TODO(yangguo): remove this once we can serialize IC stubs.
+  Assembler::Options options = Assembler::DefaultOptions(isolate(), true);
+  MacroAssembler masm(isolate(), options, nullptr, 256,
+                      CodeObjectRequired::kYes);
 
   {
     // Update the static counter each time a new code stub is generated.
     isolate()->counters()->code_stubs()->Increment();
 
     // Generate the code for the stub.
-    // TODO(yangguo): remove this once we can serialize IC stubs.
-    masm.enable_serializer();
     NoCurrentFrameScope scope(&masm);
     Generate(&masm);
   }
@@ -260,7 +261,7 @@ Handle<Code> TurboFanCodeStub::GenerateCode() {
   CallInterfaceDescriptor descriptor(GetCallInterfaceDescriptor());
   compiler::CodeAssemblerState state(
       isolate(), &zone, descriptor, Code::STUB, name,
-      PoisoningMitigationLevel::kDontPoison, 1, GetKey());
+      PoisoningMitigationLevel::kDontPoison, GetKey());
   GenerateAssembly(&state);
   return compiler::CodeAssembler::GenerateCode(&state);
 }

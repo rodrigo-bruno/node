@@ -66,10 +66,10 @@ RUNTIME_FUNCTION(Runtime_FunctionFirstExecution) {
   DCHECK_EQ(function->feedback_vector()->optimization_marker(),
             OptimizationMarker::kLogFirstExecution);
   DCHECK(FLAG_log_function_events);
-  Handle<SharedFunctionInfo> sfi(function->shared());
-  LOG(isolate, FunctionEvent("first-execution", Script::cast(sfi->script()), -1,
-                             0, sfi->StartPosition(), sfi->EndPosition(),
-                             sfi->DebugName()));
+  Handle<SharedFunctionInfo> sfi(function->shared(), isolate);
+  LOG(isolate, FunctionEvent(
+                   "first-execution", Script::cast(sfi->script())->id(), 0,
+                   sfi->StartPosition(), sfi->EndPosition(), sfi->DebugName()));
   function->feedback_vector()->ClearOptimizationMarker();
   // Return the code to continue execution, we don't care at this point whether
   // this is for lazy compilation or has been eagerly complied.
@@ -121,8 +121,8 @@ RUNTIME_FUNCTION(Runtime_InstantiateAsmJs) {
     memory = args.at<JSArrayBuffer>(3);
   }
   if (function->shared()->HasAsmWasmData()) {
-    Handle<SharedFunctionInfo> shared(function->shared());
-    Handle<FixedArray> data(shared->asm_wasm_data());
+    Handle<SharedFunctionInfo> shared(function->shared(), isolate);
+    Handle<FixedArray> data(shared->asm_wasm_data(), isolate);
     MaybeHandle<Object> result = AsmJs::InstantiateAsmWasm(
         isolate, shared, data, stdlib, foreign, memory);
     if (!result.is_null()) {
@@ -203,7 +203,7 @@ BailoutId DetermineEntryAndDisarmOSRForInterpreter(JavaScriptFrame* frame) {
   // the one installed on the function (e.g. patched by debugger). This however
   // is fine because we guarantee the layout to be in sync, hence any BailoutId
   // representing the entry point will be valid for any copy of the bytecode.
-  Handle<BytecodeArray> bytecode(iframe->GetBytecodeArray());
+  Handle<BytecodeArray> bytecode(iframe->GetBytecodeArray(), iframe->isolate());
 
   DCHECK(frame->LookupCode()->is_interpreter_trampoline_builtin());
   DCHECK(frame->function()->shared()->HasBytecodeArray());

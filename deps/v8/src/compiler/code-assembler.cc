@@ -44,15 +44,14 @@ static_assert(
 CodeAssemblerState::CodeAssemblerState(
     Isolate* isolate, Zone* zone, const CallInterfaceDescriptor& descriptor,
     Code::Kind kind, const char* name, PoisoningMitigationLevel poisoning_level,
-    size_t result_size, uint32_t stub_key, int32_t builtin_index)
+    uint32_t stub_key, int32_t builtin_index)
     // TODO(rmcilroy): Should we use Linkage::GetBytecodeDispatchDescriptor for
     // bytecode handlers?
     : CodeAssemblerState(
           isolate, zone,
           Linkage::GetStubCallDescriptor(
               zone, descriptor, descriptor.GetStackParameterCount(),
-              CallDescriptor::kNoFlags, Operator::kNoProperties,
-              MachineType::AnyTagged(), result_size),
+              CallDescriptor::kNoFlags, Operator::kNoProperties),
           kind, name, poisoning_level, stub_key, builtin_index) {}
 
 CodeAssemblerState::CodeAssemblerState(Isolate* isolate, Zone* zone,
@@ -267,8 +266,8 @@ TNode<Number> CodeAssembler::NumberConstant(double value) {
     // deferring allocation to code generation
     // (see AllocateAndInstallRequestedHeapObjects) since that makes it easier
     // to generate constant lookups for embedded builtins.
-    return UncheckedCast<Number>(HeapConstant(
-        isolate()->factory()->NewHeapNumber(value, IMMUTABLE, TENURED)));
+    return UncheckedCast<Number>(
+        HeapConstant(isolate()->factory()->NewHeapNumber(value, TENURED)));
   }
 }
 
@@ -372,8 +371,14 @@ bool CodeAssembler::IsNullConstant(TNode<Object> node) {
   return m.Is(isolate()->factory()->null_value());
 }
 
-Node* CodeAssembler::Parameter(int value) {
-  return raw_assembler()->Parameter(value);
+Node* CodeAssembler::Parameter(int index) {
+  if (index == kTargetParameterIndex) return raw_assembler()->TargetParameter();
+  return raw_assembler()->Parameter(index);
+}
+
+bool CodeAssembler::IsJSFunctionCall() const {
+  auto call_descriptor = raw_assembler()->call_descriptor();
+  return call_descriptor->IsJSFunctionCall();
 }
 
 TNode<Context> CodeAssembler::GetJSContextParameter() {
@@ -408,6 +413,10 @@ void CodeAssembler::ReturnIf(Node* condition, Node* value) {
   Bind(&if_return);
   Return(value);
   Bind(&if_continue);
+}
+
+void CodeAssembler::ReturnRaw(Node* value) {
+  return raw_assembler()->Return(value);
 }
 
 void CodeAssembler::DebugAbort(Node* message) {
@@ -1073,16 +1082,22 @@ class NodeArray {
 TNode<Object> CodeAssembler::CallRuntimeImpl(
     Runtime::FunctionId function, TNode<Object> context,
     std::initializer_list<TNode<Object>> args) {
+  int result_size = Runtime::FunctionForId(function)->result_size;
+  TNode<Code> centry =
+      HeapConstant(CodeFactory::RuntimeCEntry(isolate(), result_size));
+  return CallRuntimeWithCEntryImpl(function, centry, context, args);
+}
+
+TNode<Object> CodeAssembler::CallRuntimeWithCEntryImpl(
+    Runtime::FunctionId function, TNode<Code> centry, TNode<Object> context,
+    std::initializer_list<TNode<Object>> args) {
   constexpr size_t kMaxNumArgs = 6;
   DCHECK_GE(kMaxNumArgs, args.size());
   int argc = static_cast<int>(args.size());
   auto call_descriptor = Linkage::GetRuntimeCallDescriptor(
       zone(), function, argc, Operator::kNoProperties,
       CallDescriptor::kNoFlags);
-  int return_count = static_cast<int>(call_descriptor->ReturnCount());
 
-  Node* centry =
-      HeapConstant(CodeFactory::RuntimeCEntry(isolate(), return_count));
   Node* ref = ExternalConstant(ExternalReference::Create(function));
   Node* arity = Int32Constant(argc);
 
@@ -1133,19 +1148,20 @@ void CodeAssembler::TailCallRuntimeWithCEntryImpl(
 
 Node* CodeAssembler::CallStubN(const CallInterfaceDescriptor& descriptor,
                                size_t result_size, int input_count,
-                               Node* const* inputs, bool pass_context) {
+                               Node* const* inputs) {
   // implicit nodes are target and optionally context.
-  int implicit_nodes = pass_context ? 2 : 1;
+  int implicit_nodes = descriptor.HasContextParameter() ? 2 : 1;
   DCHECK_LE(implicit_nodes, input_count);
   int argc = input_count - implicit_nodes;
   DCHECK_LE(descriptor.GetParameterCount(), argc);
   // Extra arguments not mentioned in the descriptor are passed on the stack.
   int stack_parameter_count = argc - descriptor.GetRegisterParameterCount();
   DCHECK_LE(descriptor.GetStackParameterCount(), stack_parameter_count);
+  DCHECK_EQ(result_size, descriptor.GetReturnCount());
+
   auto call_descriptor = Linkage::GetStubCallDescriptor(
       zone(), descriptor, stack_parameter_count, CallDescriptor::kNoFlags,
-      Operator::kNoProperties, MachineType::AnyTagged(), result_size,
-      pass_context ? Linkage::kPassContext : Linkage::kNoContext);
+      Operator::kNoProperties);
 
   CallPrologue();
   Node* return_value =
@@ -1160,16 +1176,16 @@ void CodeAssembler::TailCallStubImpl(const CallInterfaceDescriptor& descriptor,
   constexpr size_t kMaxNumArgs = 11;
   DCHECK_GE(kMaxNumArgs, args.size());
   DCHECK_EQ(descriptor.GetParameterCount(), args.size());
-  size_t result_size = 1;
   auto call_descriptor = Linkage::GetStubCallDescriptor(
       zone(), descriptor, descriptor.GetStackParameterCount(),
-      CallDescriptor::kNoFlags, Operator::kNoProperties,
-      MachineType::AnyTagged(), result_size);
+      CallDescriptor::kNoFlags, Operator::kNoProperties);
 
   NodeArray<kMaxNumArgs + 2> inputs;
   inputs.Add(target);
   for (auto arg : args) inputs.Add(arg);
-  inputs.Add(context);
+  if (descriptor.HasContextParameter()) {
+    inputs.Add(context);
+  }
 
   raw_assembler()->TailCallN(call_descriptor, inputs.size(), inputs.data());
 }
@@ -1184,10 +1200,11 @@ Node* CodeAssembler::CallStubRImpl(const CallInterfaceDescriptor& descriptor,
   NodeArray<kMaxNumArgs + 2> inputs;
   inputs.Add(target);
   for (auto arg : args) inputs.Add(arg);
-  if (context) inputs.Add(context);
+  if (descriptor.HasContextParameter()) {
+    inputs.Add(context);
+  }
 
-  return CallStubN(descriptor, result_size, inputs.size(), inputs.data(),
-                   context != nullptr);
+  return CallStubN(descriptor, result_size, inputs.size(), inputs.data());
 }
 
 Node* CodeAssembler::TailCallStubThenBytecodeDispatchImpl(
@@ -1203,7 +1220,7 @@ Node* CodeAssembler::TailCallStubThenBytecodeDispatchImpl(
   DCHECK_LE(descriptor.GetStackParameterCount(), stack_parameter_count);
   auto call_descriptor = Linkage::GetStubCallDescriptor(
       zone(), descriptor, stack_parameter_count, CallDescriptor::kNoFlags,
-      Operator::kNoProperties, MachineType::AnyTagged(), 0);
+      Operator::kNoProperties);
 
   NodeArray<kMaxNumArgs + 2> inputs;
   inputs.Add(target);
@@ -1238,11 +1255,9 @@ TNode<Object> CodeAssembler::TailCallJSCode(TNode<Code> code,
                                             TNode<Object> new_target,
                                             TNode<Int32T> arg_count) {
   JSTrampolineDescriptor descriptor;
-  size_t result_size = 1;
   auto call_descriptor = Linkage::GetStubCallDescriptor(
       zone(), descriptor, descriptor.GetStackParameterCount(),
-      CallDescriptor::kFixedTargetRegister, Operator::kNoProperties,
-      MachineType::AnyTagged(), result_size);
+      CallDescriptor::kFixedTargetRegister, Operator::kNoProperties);
 
   Node* nodes[] = {code, function, new_target, arg_count, context};
   CHECK_EQ(descriptor.GetParameterCount() + 2, arraysize(nodes));
@@ -1667,7 +1682,8 @@ void CodeAssemblerLabel::UpdateVariablesAfterBind() {
 
 }  // namespace compiler
 
-Smi* CheckObjectType(Object* value, Smi* type, String* location) {
+Smi* CheckObjectType(Isolate* isolate, Object* value, Smi* type,
+                     String* location) {
 #ifdef DEBUG
   const char* expected;
   switch (static_cast<ObjectType>(type->value())) {
@@ -1690,7 +1706,7 @@ Smi* CheckObjectType(Object* value, Smi* type, String* location) {
 #undef TYPE_STRUCT_CASE
   }
   std::stringstream value_description;
-  value->Print(value_description);
+  value->Print(isolate, value_description);
   V8_Fatal(__FILE__, __LINE__,
            "Type cast failed in %s\n"
            "  Expected %s but found %s",

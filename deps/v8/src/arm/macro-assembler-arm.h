@@ -92,12 +92,10 @@ enum TargetAddressStorageMode {
 
 class TurboAssembler : public TurboAssemblerBase {
  public:
-  TurboAssembler(Isolate* isolate, void* buffer, int buffer_size,
-                 CodeObjectRequired create_code_object)
-      : TurboAssemblerBase(isolate, buffer, buffer_size, create_code_object) {}
-
-  TurboAssembler(IsolateData isolate_data, void* buffer, int buffer_size)
-      : TurboAssemblerBase(isolate_data, buffer, buffer_size) {}
+  TurboAssembler(Isolate* isolate, const Options& options, void* buffer,
+                 int buffer_size, CodeObjectRequired create_code_object)
+      : TurboAssemblerBase(isolate, options, buffer, buffer_size,
+                           create_code_object) {}
 
   // Activation support.
   void EnterFrame(StackFrame::Type type,
@@ -320,14 +318,10 @@ class TurboAssembler : public TurboAssemblerBase {
   void AsrPair(Register dst_low, Register dst_high, Register src_low,
                Register src_high, uint32_t shift);
 
-#ifdef V8_EMBEDDED_BUILTINS
   void LoadFromConstantsTable(Register destination,
                               int constant_index) override;
-  void LoadExternalReference(Register destination,
-                             int reference_index) override;
-  void LoadBuiltin(Register destination, int builtin_index) override;
   void LoadRootRegisterOffset(Register destination, intptr_t offset) override;
-#endif  // V8_EMBEDDED_BUILTINS
+  void LoadRootRelative(Register destination, int32_t offset) override;
 
   // Returns the size of a call in instructions. Note, the value returned is
   // only valid as long as no entries are added to the constant pool between
@@ -358,7 +352,9 @@ class TurboAssembler : public TurboAssemblerBase {
 
   // This should only be used when assembling a deoptimizer call because of
   // the CheckConstPool invocation, which is only needed for deoptimization.
-  void CallForDeoptimization(Address target, RelocInfo::Mode rmode) {
+  void CallForDeoptimization(Address target, int deopt_id,
+                             RelocInfo::Mode rmode) {
+    USE(deopt_id);
     Call(target, rmode);
     CheckConstPool(false, false);
   }
@@ -600,7 +596,11 @@ class TurboAssembler : public TurboAssemblerBase {
 class MacroAssembler : public TurboAssembler {
  public:
   MacroAssembler(Isolate* isolate, void* buffer, int size,
-                 CodeObjectRequired create_code_object);
+                 CodeObjectRequired create_code_object)
+      : MacroAssembler(isolate, Assembler::DefaultOptions(isolate), buffer,
+                       size, create_code_object) {}
+  MacroAssembler(Isolate* isolate, const Options& options, void* buffer,
+                 int size, CodeObjectRequired create_code_object);
 
   void Mls(Register dst, Register src1, Register src2, Register srcA,
            Condition cond = al);
@@ -846,9 +846,6 @@ class MacroAssembler : public TurboAssembler {
   // Abort execution if argument is a smi, enabled via --debug-code.
   void AssertNotSmi(Register object);
   void AssertSmi(Register object);
-
-  // Abort execution if argument is not a FixedArray, enabled via --debug-code.
-  void AssertFixedArray(Register object);
 
   // Abort execution if argument is not a Constructor, enabled via --debug-code.
   void AssertConstructor(Register object);

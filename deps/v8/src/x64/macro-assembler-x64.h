@@ -43,9 +43,7 @@ constexpr Register kWasmInstanceRegister = rsi;
 constexpr Register kScratchRegister = r10;
 constexpr XMMRegister kScratchDoubleReg = xmm15;
 constexpr Register kRootRegister = r13;  // callee save
-// Actual value of root register is offset from the root array's start
-// to take advantage of negitive 8-bit displacement values.
-constexpr int kRootRegisterBias = 128;
+
 constexpr Register kOffHeapTrampolineRegister = kScratchRegister;
 
 // Convenience for platform-independent signatures.
@@ -129,12 +127,10 @@ class StackArgumentsAccessor BASE_EMBEDDED {
 
 class TurboAssembler : public TurboAssemblerBase {
  public:
-  TurboAssembler(Isolate* isolate, void* buffer, int buffer_size,
-                 CodeObjectRequired create_code_object)
-      : TurboAssemblerBase(isolate, buffer, buffer_size, create_code_object) {}
-
-  TurboAssembler(IsolateData isolate_data, void* buffer, int buffer_size)
-      : TurboAssemblerBase(isolate_data, buffer, buffer_size) {}
+  TurboAssembler(Isolate* isolate, const Options& options, void* buffer,
+                 int buffer_size, CodeObjectRequired create_code_object)
+      : TurboAssemblerBase(isolate, options, buffer, buffer_size,
+                           create_code_object) {}
 
   template <typename Dst, typename... Args>
   struct AvxHelper {
@@ -374,14 +370,10 @@ class TurboAssembler : public TurboAssemblerBase {
   // register.
   void LoadAddress(Register destination, ExternalReference source);
 
-#ifdef V8_EMBEDDED_BUILTINS
   void LoadFromConstantsTable(Register destination,
                               int constant_index) override;
-  void LoadBuiltin(Register destination, int builtin_index) override;
-  void LoadExternalReference(Register destination,
-                             int reference_index) override;
   void LoadRootRegisterOffset(Register destination, intptr_t offset) override;
-#endif  // V8_EMBEDDED_BUILTINS
+  void LoadRootRelative(Register destination, int32_t offset) override;
 
   // Operand pointing to an external reference.
   // May emit code to set up the scratch register. The operand is
@@ -410,7 +402,9 @@ class TurboAssembler : public TurboAssemblerBase {
 
   void RetpolineJump(Register reg);
 
-  void CallForDeoptimization(Address target, RelocInfo::Mode rmode) {
+  void CallForDeoptimization(Address target, int deopt_id,
+                             RelocInfo::Mode rmode) {
+    USE(deopt_id);
     call(target, rmode);
   }
 
@@ -555,8 +549,13 @@ class TurboAssembler : public TurboAssemblerBase {
 // MacroAssembler implements a collection of frequently used macros.
 class MacroAssembler : public TurboAssembler {
  public:
+  // TODO(titzer): inline this utility constructor.
   MacroAssembler(Isolate* isolate, void* buffer, int size,
-                 CodeObjectRequired create_code_object);
+                 CodeObjectRequired create_code_object)
+      : MacroAssembler(isolate, Assembler::DefaultOptions(isolate), buffer,
+                       size, create_code_object) {}
+  MacroAssembler(Isolate* isolate, const Options& options, void* buffer,
+                 int size, CodeObjectRequired create_code_object);
 
   // Loads and stores the value of an external reference.
   // Special case code for load and store to take advantage of
@@ -802,9 +801,6 @@ class MacroAssembler : public TurboAssembler {
   // Abort execution if argument is not a smi, enabled via --debug-code.
   void AssertSmi(Register object);
   void AssertSmi(Operand object);
-
-  // Abort execution if argument is not a FixedArray, enabled via --debug-code.
-  void AssertFixedArray(Register object);
 
   // Abort execution if argument is not a Constructor, enabled via --debug-code.
   void AssertConstructor(Register object);

@@ -100,8 +100,8 @@ inline void push(LiftoffAssembler* assm, LiftoffRegister reg, ValueType type) {
 
 }  // namespace liftoff
 
-uint32_t LiftoffAssembler::PrepareStackFrame() {
-  uint32_t offset = static_cast<uint32_t>(pc_offset());
+int LiftoffAssembler::PrepareStackFrame() {
+  int offset = pc_offset();
   // When constant that represents size of stack frame can't be represented
   // as 16bit we need three instructions to add it to sp, so we reserve space
   // for this case.
@@ -111,15 +111,16 @@ uint32_t LiftoffAssembler::PrepareStackFrame() {
   return offset;
 }
 
-void LiftoffAssembler::PatchPrepareStackFrame(uint32_t offset,
+void LiftoffAssembler::PatchPrepareStackFrame(int offset,
                                               uint32_t stack_slots) {
   uint32_t bytes = liftoff::kConstantStackSpace + kStackSlotSize * stack_slots;
   DCHECK_LE(bytes, kMaxInt);
   // We can't run out of space, just pass anything big enough to not cause the
   // assembler to try to grow the buffer.
   constexpr int kAvailableSpace = 256;
-  TurboAssembler patching_assembler(isolate(), buffer_ + offset,
-                                    kAvailableSpace, CodeObjectRequired::kNo);
+  TurboAssembler patching_assembler(nullptr, Assembler::Options{},
+                                    buffer_ + offset, kAvailableSpace,
+                                    CodeObjectRequired::kNo);
   // If bytes can be represented as 16bit, addiu will be generated and two
   // nops will stay untouched. Otherwise, lui-ori sequence will load it to
   // register and, as third instruction, addu will be generated.
@@ -1214,12 +1215,9 @@ void LiftoffAssembler::emit_f64_set_cond(Condition cond, Register dst,
   bind(&cont);
 }
 
-void LiftoffAssembler::StackCheck(Label* ool_code) {
-  LiftoffRegister tmp = GetUnusedRegister(kGpReg);
-  TurboAssembler::li(
-      tmp.gp(), Operand(ExternalReference::address_of_stack_limit(isolate())));
-  TurboAssembler::Ulw(tmp.gp(), MemOperand(tmp.gp()));
-  TurboAssembler::Branch(ool_code, ule, sp, Operand(tmp.gp()));
+void LiftoffAssembler::StackCheck(Label* ool_code, Register limit_address) {
+  TurboAssembler::Ulw(limit_address, MemOperand(limit_address));
+  TurboAssembler::Branch(ool_code, ule, sp, Operand(limit_address));
 }
 
 void LiftoffAssembler::CallTrapCallbackForTesting() {

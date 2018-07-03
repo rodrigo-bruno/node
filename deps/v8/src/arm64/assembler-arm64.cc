@@ -180,6 +180,17 @@ bool RelocInfo::IsInConstantPool() {
   return instr->IsLdrLiteralX();
 }
 
+int RelocInfo::GetDeoptimizationId(Isolate* isolate, DeoptimizeKind kind) {
+  DCHECK(IsRuntimeEntry(rmode_));
+  Instruction* movz_instr = reinterpret_cast<Instruction*>(pc_)->preceding();
+  DCHECK(movz_instr->IsMovz());
+  uint64_t imm = static_cast<uint64_t>(movz_instr->ImmMoveWide())
+                 << (16 * movz_instr->ShiftMoveWide());
+  DCHECK_LE(imm, INT_MAX);
+
+  return static_cast<int>(imm);
+}
+
 void RelocInfo::set_js_to_wasm_address(Address address,
                                        ICacheFlushMode icache_flush_mode) {
   DCHECK_EQ(rmode_, JS_TO_WASM_CALL);
@@ -192,8 +203,8 @@ Address RelocInfo::js_to_wasm_address() const {
   return Assembler::target_address_at(pc_, constant_pool_);
 }
 
-uint32_t RelocInfo::wasm_stub_call_tag() const {
-  DCHECK_EQ(rmode_, WASM_STUB_CALL);
+uint32_t RelocInfo::wasm_call_tag() const {
+  DCHECK(rmode_ == WASM_CALL || rmode_ == WASM_STUB_CALL);
   Instruction* instr = reinterpret_cast<Instruction*>(pc_);
   if (instr->IsLdrLiteralX()) {
     return static_cast<uint32_t>(
@@ -300,8 +311,8 @@ void Immediate::InitializeHandle(Handle<HeapObject> handle) {
 bool Operand::NeedsRelocation(const Assembler* assembler) const {
   RelocInfo::Mode rmode = immediate_.rmode();
 
-  if (rmode == RelocInfo::EXTERNAL_REFERENCE) {
-    return assembler->serializer_enabled();
+  if (RelocInfo::IsOnlyForSerializer(rmode)) {
+    return assembler->options().record_reloc_info_for_serialization;
   }
 
   return !RelocInfo::IsNone(rmode);
@@ -531,7 +542,7 @@ void ConstPool::EmitEntries() {
 
       // Instruction to patch must be 'ldr rd, [pc, #offset]' with offset == 0.
       DCHECK(instr->IsLdrLiteral() && instr->ImmLLiteral() == 0);
-      instr->SetImmPCOffsetTarget(assm_->isolate_data(), assm_->pc());
+      instr->SetImmPCOffsetTarget(assm_->options(), assm_->pc());
     }
 
     assm_->dc64(entry.first);
@@ -541,8 +552,8 @@ void ConstPool::EmitEntries() {
 
 
 // Assembler
-Assembler::Assembler(IsolateData isolate_data, void* buffer, int buffer_size)
-    : AssemblerBase(isolate_data, buffer, buffer_size),
+Assembler::Assembler(const Options& options, void* buffer, int buffer_size)
+    : AssemblerBase(options, buffer, buffer_size),
       constpool_(this),
       unresolved_branches_() {
   const_pool_blocked_nesting_ = 0;
@@ -580,8 +591,8 @@ void Assembler::AllocateAndInstallRequestedHeapObjects(Isolate* isolate) {
     Address pc = reinterpret_cast<Address>(buffer_) + request.offset();
     switch (request.kind()) {
       case HeapObjectRequest::kHeapNumber: {
-        Handle<HeapObject> object = isolate->factory()->NewHeapNumber(
-            request.heap_number(), IMMUTABLE, TENURED);
+        Handle<HeapObject> object =
+            isolate->factory()->NewHeapNumber(request.heap_number(), TENURED);
         set_target_address_at(pc, 0 /* unused */, object.address());
         break;
       }
@@ -688,22 +699,22 @@ void Assembler::RemoveBranchFromLabelLinkChain(Instruction* branch,
 
   } else if (branch == next_link) {
     // The branch is the last (but not also the first) instruction in the chain.
-    prev_link->SetImmPCOffsetTarget(isolate_data(), prev_link);
+    prev_link->SetImmPCOffsetTarget(options(), prev_link);
 
   } else {
     // The branch is in the middle of the chain.
     if (prev_link->IsTargetInImmPCOffsetRange(next_link)) {
-      prev_link->SetImmPCOffsetTarget(isolate_data(), next_link);
+      prev_link->SetImmPCOffsetTarget(options(), next_link);
     } else if (label_veneer != nullptr) {
       // Use the veneer for all previous links in the chain.
-      prev_link->SetImmPCOffsetTarget(isolate_data(), prev_link);
+      prev_link->SetImmPCOffsetTarget(options(), prev_link);
 
       end_of_chain = false;
       link = next_link;
       while (!end_of_chain) {
         next_link = link->ImmPCOffsetTarget();
         end_of_chain = (link == next_link);
-        link->SetImmPCOffsetTarget(isolate_data(), label_veneer);
+        link->SetImmPCOffsetTarget(options(), label_veneer);
         link = next_link;
       }
     } else {
@@ -774,11 +785,10 @@ void Assembler::bind(Label* label) {
       // Internal references do not get patched to an instruction but directly
       // to an address.
       internal_reference_positions_.push_back(linkoffset);
-      PatchingAssembler patcher(isolate_data(), reinterpret_cast<byte*>(link),
-                                2);
+      PatchingAssembler patcher(options(), reinterpret_cast<byte*>(link), 2);
       patcher.dc64(reinterpret_cast<uintptr_t>(pc_));
     } else {
-      link->SetImmPCOffsetTarget(isolate_data(),
+      link->SetImmPCOffsetTarget(options(),
                                  reinterpret_cast<Instruction*>(pc_));
     }
 
@@ -4073,9 +4083,7 @@ void Assembler::EmitStringData(const char* string) {
 
 void Assembler::debug(const char* message, uint32_t code, Instr params) {
 #ifdef USE_SIMULATOR
-  // Don't generate simulator specific code if we are building a snapshot, which
-  // might be run on real hardware.
-  if (!serializer_enabled()) {
+  if (options().enable_simulator_code) {
     // The arguments to the debug marker need to be contiguous in memory, so
     // make sure we don't try to emit pools.
     BlockPoolsScope scope(this);
@@ -4776,8 +4784,8 @@ void Assembler::RecordRelocInfo(RelocInfo::Mode rmode, intptr_t data,
 
   if (!RelocInfo::IsNone(rmode) && write_reloc_info) {
     // Don't record external references unless the heap will be serialized.
-    if (rmode == RelocInfo::EXTERNAL_REFERENCE &&
-        !serializer_enabled() && !emit_debug_code()) {
+    if (RelocInfo::IsOnlyForSerializer(rmode) &&
+        !options().record_reloc_info_for_serialization && !emit_debug_code()) {
       return;
     }
     DCHECK_GE(buffer_space(), kMaxRelocSize);  // too late to grow buffer here
@@ -4936,7 +4944,7 @@ void Assembler::EmitVeneers(bool force_emit, bool need_protection, int margin) {
       // to the label.
       Instruction* veneer = reinterpret_cast<Instruction*>(pc_);
       RemoveBranchFromLabelLinkChain(branch, label, veneer);
-      branch->SetImmPCOffsetTarget(isolate_data(), veneer);
+      branch->SetImmPCOffsetTarget(options(), veneer);
       b(label);
 #ifdef DEBUG
       DCHECK(SizeOfCodeGeneratedSince(&veneer_size_check) <=

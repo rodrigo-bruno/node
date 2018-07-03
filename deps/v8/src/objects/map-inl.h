@@ -267,9 +267,11 @@ int Map::GetInObjectPropertyOffset(int index) const {
 }
 
 Handle<Map> Map::AddMissingTransitionsForTesting(
-    Handle<Map> split_map, Handle<DescriptorArray> descriptors,
+    Isolate* isolate, Handle<Map> split_map,
+    Handle<DescriptorArray> descriptors,
     Handle<LayoutDescriptor> full_layout_descriptor) {
-  return AddMissingTransitions(split_map, descriptors, full_layout_descriptor);
+  return AddMissingTransitions(isolate, split_map, descriptors,
+                               full_layout_descriptor);
 }
 
 InstanceType Map::instance_type() const {
@@ -700,8 +702,9 @@ void Map::SetConstructor(Object* constructor, WriteBarrierMode mode) {
   set_constructor_or_backpointer(constructor, mode);
 }
 
-Handle<Map> Map::CopyInitialMap(Handle<Map> map) {
-  return CopyInitialMap(map, map->instance_size(), map->GetInObjectProperties(),
+Handle<Map> Map::CopyInitialMap(Isolate* isolate, Handle<Map> map) {
+  return CopyInitialMap(isolate, map, map->instance_size(),
+                        map->GetInObjectProperties(),
                         map->UnusedPropertyFields());
 }
 
@@ -709,14 +712,14 @@ bool Map::IsInobjectSlackTrackingInProgress() const {
   return construction_counter() != Map::kNoSlackTracking;
 }
 
-void Map::InobjectSlackTrackingStep() {
+void Map::InobjectSlackTrackingStep(Isolate* isolate) {
   // Slack tracking should only be performed on an initial map.
   DCHECK(GetBackPointer()->IsUndefined());
   if (!IsInobjectSlackTrackingInProgress()) return;
   int counter = construction_counter();
   set_construction_counter(counter - 1);
   if (counter == kSlackTrackingCounterEnd) {
-    CompleteInobjectSlackTracking();
+    CompleteInobjectSlackTracking(isolate);
   }
 }
 
@@ -734,7 +737,8 @@ int NormalizedMapCache::GetIndex(Handle<Map> map) {
   return map->Hash() % NormalizedMapCache::kEntries;
 }
 
-bool NormalizedMapCache::IsNormalizedMapCache(const HeapObject* obj) {
+bool NormalizedMapCache::IsNormalizedMapCache(Isolate* isolate,
+                                              const HeapObject* obj) {
   if (!obj->IsFixedArray()) return false;
   if (FixedArray::cast(obj)->length() != NormalizedMapCache::kEntries) {
     return false;
@@ -742,7 +746,7 @@ bool NormalizedMapCache::IsNormalizedMapCache(const HeapObject* obj) {
 #ifdef VERIFY_HEAP
   if (FLAG_verify_heap) {
     reinterpret_cast<NormalizedMapCache*>(const_cast<HeapObject*>(obj))
-        ->NormalizedMapCacheVerify();
+        ->NormalizedMapCacheVerify(isolate);
   }
 #endif
   return true;

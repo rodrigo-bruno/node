@@ -959,7 +959,8 @@ KeyedAccessStoreMode FeedbackNexus::GetKeyedAccessStoreMode() const {
     if (maybe_code_handler.object()->IsStoreHandler()) {
       Handle<StoreHandler> data_handler =
           Handle<StoreHandler>::cast(maybe_code_handler.object());
-      handler = handle(Code::cast(data_handler->smi_handler()));
+      handler = handle(Code::cast(data_handler->smi_handler()),
+                       vector()->GetIsolate());
     } else if (maybe_code_handler.object()->IsSmi()) {
       // Skip proxy handlers.
       DCHECK_EQ(*(maybe_code_handler.object()),
@@ -1018,7 +1019,8 @@ ForInHint FeedbackNexus::GetForInFeedback() const {
 
 Handle<FeedbackCell> FeedbackNexus::GetFeedbackCell() const {
   DCHECK_EQ(FeedbackSlotKind::kCreateClosure, kind());
-  return handle(FeedbackCell::cast(GetFeedback()->ToObject()));
+  return handle(FeedbackCell::cast(GetFeedback()->ToObject()),
+                vector()->GetIsolate());
 }
 
 MaybeHandle<JSObject> FeedbackNexus::GetConstructorFeedback() const {
@@ -1130,7 +1132,7 @@ std::vector<Handle<String>> FeedbackNexus::GetTypesForSourcePositions(
   }
   DCHECK(types->ValueAt(entry)->IsArrayList());
   Handle<ArrayList> position_specific_types =
-      Handle<ArrayList>(ArrayList::cast(types->ValueAt(entry)));
+      Handle<ArrayList>(ArrayList::cast(types->ValueAt(entry)), isolate);
   for (int i = 0; i < position_specific_types->Length(); i++) {
     Object* t = position_specific_types->Get(i);
     types_for_position.push_back(Handle<String>(String::cast(t), isolate));
@@ -1155,7 +1157,7 @@ Handle<JSObject> ConvertToJSObject(Isolate* isolate,
       int value_index = index + SimpleNumberDictionary::kEntryValueIndex;
 
       Handle<ArrayList> position_specific_types(
-          ArrayList::cast(feedback->get(value_index)));
+          ArrayList::cast(feedback->get(value_index)), isolate);
 
       int position = Smi::ToInt(key);
       JSObject::AddDataElement(

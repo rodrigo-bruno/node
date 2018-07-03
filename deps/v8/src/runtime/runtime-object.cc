@@ -130,7 +130,7 @@ static MaybeHandle<Object> KeyedGetObjectProperty(Isolate* isolate,
     if (index >= 0 && index < str->length()) {
       Factory* factory = isolate->factory();
       return factory->LookupSingleCharacterStringFromCode(
-          String::Flatten(str)->Get(index));
+          String::Flatten(isolate, str)->Get(index));
     }
   }
 
@@ -202,8 +202,8 @@ bool DeleteObjectPropertyFast(Isolate* isolate, Handle<JSReceiver> receiver,
   // Finally, perform the map rollback.
   receiver->synchronized_set_map(Map::cast(backpointer));
 #if VERIFY_HEAP
-  receiver->HeapObjectVerify();
-  receiver->property_array()->PropertyArrayVerify();
+  receiver->HeapObjectVerify(isolate);
+  receiver->property_array()->PropertyArrayVerify(isolate);
 #endif
   return true;
 }
@@ -241,6 +241,56 @@ RUNTIME_FUNCTION(Runtime_ObjectKeys) {
       KeyAccumulator::GetKeys(receiver, KeyCollectionMode::kOwnOnly,
                               ENUMERABLE_STRINGS,
                               GetKeysConversion::kConvertToString));
+  return *keys;
+}
+
+// ES #sec-object.getOwnPropertyNames
+RUNTIME_FUNCTION(Runtime_ObjectGetOwnPropertyNames) {
+  HandleScope scope(isolate);
+  Handle<Object> object = args.at(0);
+
+  // Convert the {object} to a proper {receiver}.
+  Handle<JSReceiver> receiver;
+  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, receiver,
+                                     Object::ToObject(isolate, object));
+
+  // Collect the own keys for the {receiver}.
+  Handle<FixedArray> keys;
+  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
+      isolate, keys,
+      KeyAccumulator::GetKeys(receiver, KeyCollectionMode::kOwnOnly,
+                              SKIP_SYMBOLS,
+                              GetKeysConversion::kConvertToString));
+  return *keys;
+}
+
+RUNTIME_FUNCTION(Runtime_ObjectGetOwnPropertyNamesTryFast) {
+  HandleScope scope(isolate);
+  Handle<Object> object = args.at(0);
+
+  // Convert the {object} to a proper {receiver}.
+  Handle<JSReceiver> receiver;
+  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, receiver,
+                                     Object::ToObject(isolate, object));
+
+  Handle<Map> map(receiver->map(), isolate);
+
+  int nod = map->NumberOfOwnDescriptors();
+  Handle<FixedArray> keys;
+  if (nod != 0 && map->NumberOfEnumerableProperties() == nod) {
+    ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
+        isolate, keys,
+        KeyAccumulator::GetKeys(receiver, KeyCollectionMode::kOwnOnly,
+                                ENUMERABLE_STRINGS,
+                                GetKeysConversion::kConvertToString));
+  } else {
+    ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
+        isolate, keys,
+        KeyAccumulator::GetKeys(receiver, KeyCollectionMode::kOwnOnly,
+                                SKIP_SYMBOLS,
+                                GetKeysConversion::kConvertToString));
+  }
+
   return *keys;
 }
 
@@ -364,7 +414,7 @@ RUNTIME_FUNCTION(Runtime_ObjectCreate) {
   // TODO(bmeurer): Use a dedicated cache for Object.create; think about
   // slack tracking for Object.create.
   Handle<Map> map =
-      Map::GetObjectCreateMap(Handle<HeapObject>::cast(prototype));
+      Map::GetObjectCreateMap(isolate, Handle<HeapObject>::cast(prototype));
 
   // Actually allocate the object.
   Handle<JSObject> object;
@@ -720,7 +770,7 @@ RUNTIME_FUNCTION(Runtime_CompleteInobjectSlackTrackingForMap) {
   DCHECK_EQ(1, args.length());
 
   CONVERT_ARG_HANDLE_CHECKED(Map, initial_map, 0);
-  initial_map->CompleteInobjectSlackTracking();
+  initial_map->CompleteInobjectSlackTracking(isolate);
 
   return isolate->heap()->undefined_value();
 }

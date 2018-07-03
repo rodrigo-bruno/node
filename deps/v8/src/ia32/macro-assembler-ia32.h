@@ -56,12 +56,10 @@ bool AreAliased(Register reg1, Register reg2, Register reg3 = no_reg,
 
 class TurboAssembler : public TurboAssemblerBase {
  public:
-  TurboAssembler(Isolate* isolate, void* buffer, int buffer_size,
-                 CodeObjectRequired create_code_object)
-      : TurboAssemblerBase(isolate, buffer, buffer_size, create_code_object) {}
-
-  TurboAssembler(IsolateData isolate_data, void* buffer, int buffer_size)
-      : TurboAssemblerBase(isolate_data, buffer, buffer_size) {}
+  TurboAssembler(Isolate* isolate, const Options& options, void* buffer,
+                 int buffer_size, CodeObjectRequired create_code_object)
+      : TurboAssemblerBase(isolate, options, buffer, buffer_size,
+                           create_code_object) {}
 
   void CheckPageFlag(Register object, Register scratch, int mask, Condition cc,
                      Label* condition_met,
@@ -74,6 +72,19 @@ class TurboAssembler : public TurboAssemblerBase {
     UNREACHABLE();
   }
   void LeaveFrame(StackFrame::Type type);
+
+// Allocate a stack frame of given size (i.e. decrement {esp} by the value
+// stored in the given register).
+#ifdef V8_OS_WIN
+  // On win32, take special care if the number of bytes is greater than 4096:
+  // Ensure that each page within the new stack frame is touched once in
+  // decreasing order. See
+  // https://msdn.microsoft.com/en-us/library/aa227153(v=vs.60).aspx.
+  // Use {bytes_scratch} as scratch register for this procedure.
+  void AllocateStackFrame(Register bytes_scratch);
+#else
+  void AllocateStackFrame(Register bytes) { sub(esp, bytes); }
+#endif
 
   // Print a message to stdout and abort execution.
   void Abort(AbortReason reason);
@@ -122,7 +133,9 @@ class TurboAssembler : public TurboAssemblerBase {
 
   void RetpolineJump(Register reg);
 
-  void CallForDeoptimization(Address target, RelocInfo::Mode rmode) {
+  void CallForDeoptimization(Address target, int deopt_id,
+                             RelocInfo::Mode rmode) {
+    USE(deopt_id);
     call(target, rmode);
   }
 
@@ -212,6 +225,18 @@ class TurboAssembler : public TurboAssemblerBase {
 
   void LoadRoot(Register destination, Heap::RootListIndex index) override;
 
+  // TODO(jgruber,v8:6666): Implement embedded builtins.
+  void LoadFromConstantsTable(Register destination,
+                              int constant_index) override {
+    UNREACHABLE();
+  }
+  void LoadRootRegisterOffset(Register destination, intptr_t offset) override {
+    UNREACHABLE();
+  }
+  void LoadRootRelative(Register destination, int32_t offset) override {
+    UNREACHABLE();
+  }
+
   // Return and drop arguments from stack, where the number of arguments
   // may be bigger than 2^16 - 1.  Requires a scratch register.
   void Ret(int bytes_dropped, Register scratch);
@@ -284,9 +309,34 @@ class TurboAssembler : public TurboAssemblerBase {
 #undef AVX_OP3_XO
 #undef AVX_OP3_WITH_TYPE
 
-  // Non-SSE2 instructions.
-  void Ptest(XMMRegister dst, XMMRegister src) { Ptest(dst, Operand(src)); }
-  void Ptest(XMMRegister dst, Operand src);
+// Non-SSE2 instructions.
+#define AVX_OP2_WITH_TYPE_SCOPE(macro_name, name, dst_type, src_type, \
+                                sse_scope)                            \
+  void macro_name(dst_type dst, src_type src) {                       \
+    if (CpuFeatures::IsSupported(AVX)) {                              \
+      CpuFeatureScope scope(this, AVX);                               \
+      v##name(dst, src);                                              \
+      return;                                                         \
+    }                                                                 \
+    if (CpuFeatures::IsSupported(sse_scope)) {                        \
+      CpuFeatureScope scope(this, sse_scope);                         \
+      name(dst, src);                                                 \
+      return;                                                         \
+    }                                                                 \
+    UNREACHABLE();                                                    \
+  }
+#define AVX_OP2_XO_SSE4(macro_name, name)                                     \
+  AVX_OP2_WITH_TYPE_SCOPE(macro_name, name, XMMRegister, XMMRegister, SSE4_1) \
+  AVX_OP2_WITH_TYPE_SCOPE(macro_name, name, XMMRegister, Operand, SSE4_1)
+
+  AVX_OP2_XO_SSE4(Ptest, ptest)
+  AVX_OP2_XO_SSE4(Pmovsxbw, pmovsxbw)
+  AVX_OP2_XO_SSE4(Pmovsxwd, pmovsxwd)
+  AVX_OP2_XO_SSE4(Pmovzxbw, pmovzxbw)
+  AVX_OP2_XO_SSE4(Pmovzxwd, pmovzxwd)
+
+#undef AVX_OP2_WITH_TYPE_SCOPE
+#undef AVX_OP2_XO_SSE4
 
   void Pshufb(XMMRegister dst, XMMRegister src) { Pshufb(dst, Operand(src)); }
   void Pshufb(XMMRegister dst, Operand src);
@@ -301,6 +351,11 @@ class TurboAssembler : public TurboAssemblerBase {
   void Psignw(XMMRegister dst, Operand src);
   void Psignd(XMMRegister dst, XMMRegister src) { Psignd(dst, Operand(src)); }
   void Psignd(XMMRegister dst, Operand src);
+
+  void Palignr(XMMRegister dst, XMMRegister src, uint8_t imm8) {
+    Palignr(dst, Operand(src), imm8);
+  }
+  void Palignr(XMMRegister dst, Operand src, uint8_t imm8);
 
   void Pextrb(Register dst, XMMRegister src, int8_t imm8);
   void Pextrw(Register dst, XMMRegister src, int8_t imm8);
@@ -383,7 +438,11 @@ class TurboAssembler : public TurboAssemblerBase {
 class MacroAssembler : public TurboAssembler {
  public:
   MacroAssembler(Isolate* isolate, void* buffer, int size,
-                 CodeObjectRequired create_code_object);
+                 CodeObjectRequired create_code_object)
+      : MacroAssembler(isolate, Assembler::DefaultOptions(isolate), buffer,
+                       size, create_code_object) {}
+  MacroAssembler(Isolate* isolate, const Options& options, void* buffer,
+                 int size, CodeObjectRequired create_code_object);
 
   // Load a register with a long value as efficiently as possible.
   void Set(Register dst, int32_t x) {
@@ -560,9 +619,6 @@ class MacroAssembler : public TurboAssembler {
 
   // Abort execution if argument is a smi, enabled via --debug-code.
   void AssertNotSmi(Register object);
-
-  // Abort execution if argument is not a FixedArray, enabled via --debug-code.
-  void AssertFixedArray(Register object);
 
   // Abort execution if argument is not a JSFunction, enabled via --debug-code.
   void AssertFunction(Register object);

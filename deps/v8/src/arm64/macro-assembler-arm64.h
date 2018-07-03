@@ -179,12 +179,10 @@ enum PreShiftImmMode {
 
 class TurboAssembler : public TurboAssemblerBase {
  public:
-  TurboAssembler(Isolate* isolate, void* buffer, int buffer_size,
-                 CodeObjectRequired create_code_object)
-      : TurboAssemblerBase(isolate, buffer, buffer_size, create_code_object) {}
-
-  TurboAssembler(IsolateData isolate_data, void* buffer, int buffer_size)
-      : TurboAssemblerBase(isolate_data, buffer, buffer_size) {}
+  TurboAssembler(Isolate* isolate, const Options& options, void* buffer,
+                 int buffer_size, CodeObjectRequired create_code_object)
+      : TurboAssemblerBase(isolate, options, buffer, buffer_size,
+                           create_code_object) {}
 
   // The Abort method should call a V8 runtime function, but the CallRuntime
   // mechanism depends on CEntry. If use_real_aborts is false, Abort will
@@ -881,14 +879,10 @@ class TurboAssembler : public TurboAssemblerBase {
             int shift_amount = 0);
   void Movi(const VRegister& vd, uint64_t hi, uint64_t lo);
 
-#ifdef V8_EMBEDDED_BUILTINS
   void LoadFromConstantsTable(Register destination,
                               int constant_index) override;
-  void LoadExternalReference(Register destination,
-                             int reference_index) override;
-  void LoadBuiltin(Register destination, int builtin_index) override;
   void LoadRootRegisterOffset(Register destination, intptr_t offset) override;
-#endif  // V8_EMBEDDED_BUILTINS
+  void LoadRootRelative(Register destination, int32_t offset) override;
 
   void Jump(Register target, Condition cond = al);
   void Jump(Address target, RelocInfo::Mode rmode, Condition cond = al);
@@ -902,7 +896,8 @@ class TurboAssembler : public TurboAssemblerBase {
   // Generate an indirect call (for when a direct call's range is not adequate).
   void IndirectCall(Address target, RelocInfo::Mode rmode);
 
-  void CallForDeoptimization(Address target, RelocInfo::Mode rmode);
+  void CallForDeoptimization(Address target, int deopt_id,
+                             RelocInfo::Mode rmode);
 
   // For every Call variant, there is a matching CallSize function that returns
   // the size (in bytes) of the call sequence.
@@ -1307,8 +1302,12 @@ class TurboAssembler : public TurboAssemblerBase {
 
 class MacroAssembler : public TurboAssembler {
  public:
-  MacroAssembler(Isolate* isolate, byte* buffer, unsigned buffer_size,
-                 CodeObjectRequired create_code_object);
+  MacroAssembler(Isolate* isolate, void* buffer, int size,
+                 CodeObjectRequired create_code_object)
+      : MacroAssembler(isolate, Assembler::DefaultOptions(isolate), buffer,
+                       size, create_code_object) {}
+  MacroAssembler(Isolate* isolate, const Options& options, void* buffer,
+                 int size, CodeObjectRequired create_code_object);
 
   // Instruction set functions ------------------------------------------------
   // Logical macros.
@@ -1730,9 +1729,6 @@ class MacroAssembler : public TurboAssembler {
 
   inline void ObjectTag(Register tagged_obj, Register obj);
   inline void ObjectUntag(Register untagged_obj, Register obj);
-
-  // Abort execution if argument is not a FixedArray, enabled via --debug-code.
-  void AssertFixedArray(Register object);
 
   // Abort execution if argument is not a Constructor, enabled via --debug-code.
   void AssertConstructor(Register object);

@@ -1848,6 +1848,136 @@ class ThreadImpl {
         SHIFT_CASE(I8x16ShrU, i8x16, int16, 16,
                    static_cast<uint8_t>(a) >> imm.shift)
 #undef SHIFT_CASE
+#define CONVERT_CASE(op, src_type, name, dst_type, count, start_index, ctype, \
+                     expr)                                                    \
+  case kExpr##op: {                                                           \
+    WasmValue v = Pop();                                                      \
+    src_type s = v.to_s128().to_##name();                                     \
+    dst_type res;                                                             \
+    for (size_t i = 0; i < count; ++i) {                                      \
+      ctype a = s.val[start_index + i];                                       \
+      res.val[i] = expr;                                                      \
+    }                                                                         \
+    Push(WasmValue(Simd128(res)));                                            \
+    return true;                                                              \
+  }
+        CONVERT_CASE(F32x4SConvertI32x4, int4, i32x4, float4, 4, 0, int32_t,
+                     static_cast<float>(a))
+        CONVERT_CASE(F32x4UConvertI32x4, int4, i32x4, float4, 4, 0, uint32_t,
+                     static_cast<float>(a))
+        CONVERT_CASE(I32x4SConvertF32x4, float4, f32x4, int4, 4, 0, double,
+                     std::isnan(a) ? 0
+                                   : a<kMinInt ? kMinInt : a> kMaxInt
+                                         ? kMaxInt
+                                         : static_cast<int32_t>(a))
+        CONVERT_CASE(I32x4UConvertF32x4, float4, f32x4, int4, 4, 0, double,
+                     std::isnan(a)
+                         ? 0
+                         : a<0 ? 0 : a> kMaxUInt32 ? kMaxUInt32
+                                                   : static_cast<uint32_t>(a))
+        CONVERT_CASE(I32x4SConvertI16x8High, int8, i16x8, int4, 4, 4, int16_t,
+                     a)
+        CONVERT_CASE(I32x4UConvertI16x8High, int8, i16x8, int4, 4, 4, uint16_t,
+                     a)
+        CONVERT_CASE(I32x4SConvertI16x8Low, int8, i16x8, int4, 4, 0, int16_t, a)
+        CONVERT_CASE(I32x4UConvertI16x8Low, int8, i16x8, int4, 4, 0, uint16_t,
+                     a)
+        CONVERT_CASE(I16x8SConvertI8x16High, int16, i8x16, int8, 8, 8, int8_t,
+                     a)
+        CONVERT_CASE(I16x8UConvertI8x16High, int16, i8x16, int8, 8, 8, uint8_t,
+                     a)
+        CONVERT_CASE(I16x8SConvertI8x16Low, int16, i8x16, int8, 8, 0, int8_t, a)
+        CONVERT_CASE(I16x8UConvertI8x16Low, int16, i8x16, int8, 8, 0, uint8_t,
+                     a)
+#undef CONVERT_CASE
+#define PACK_CASE(op, src_type, name, dst_type, count, ctype, dst_ctype,    \
+                  is_unsigned)                                              \
+  case kExpr##op: {                                                         \
+    WasmValue v2 = Pop();                                                   \
+    WasmValue v1 = Pop();                                                   \
+    src_type s1 = v1.to_s128().to_##name();                                 \
+    src_type s2 = v2.to_s128().to_##name();                                 \
+    dst_type res;                                                           \
+    int64_t min = std::numeric_limits<ctype>::min();                        \
+    int64_t max = std::numeric_limits<ctype>::max();                        \
+    for (size_t i = 0; i < count; ++i) {                                    \
+      int32_t v = i < count / 2 ? s1.val[i] : s2.val[i - count / 2];        \
+      int64_t a = is_unsigned ? static_cast<int64_t>(v & 0xFFFFFFFFu) : v;  \
+      res.val[i] = static_cast<dst_ctype>(std::max(min, std::min(max, a))); \
+    }                                                                       \
+    Push(WasmValue(Simd128(res)));                                          \
+    return true;                                                            \
+  }
+        PACK_CASE(I16x8SConvertI32x4, int4, i32x4, int8, 8, int16_t, int16_t,
+                  false)
+        PACK_CASE(I16x8UConvertI32x4, int4, i32x4, int8, 8, uint16_t, int16_t,
+                  true)
+        PACK_CASE(I8x16SConvertI16x8, int8, i16x8, int16, 16, int8_t, int8_t,
+                  false)
+        PACK_CASE(I8x16UConvertI16x8, int8, i16x8, int16, 16, uint8_t, int8_t,
+                  true)
+#undef PACK_CASE
+      case kExprS128Select: {
+        int4 v2 = Pop().to_s128().to_i32x4();
+        int4 v1 = Pop().to_s128().to_i32x4();
+        int4 bool_val = Pop().to_s128().to_i32x4();
+        int4 res;
+        for (size_t i = 0; i < 4; ++i) {
+          res.val[i] = v2.val[i] ^ ((v1.val[i] ^ v2.val[i]) & bool_val.val[i]);
+        }
+        Push(WasmValue(Simd128(res)));
+        return true;
+      }
+#define ADD_HORIZ_CASE(op, name, stype, count)                    \
+  case kExpr##op: {                                               \
+    WasmValue v2 = Pop();                                         \
+    WasmValue v1 = Pop();                                         \
+    stype s1 = v1.to_s128().to_##name();                          \
+    stype s2 = v2.to_s128().to_##name();                          \
+    stype res;                                                    \
+    for (size_t i = 0; i < count / 2; ++i) {                      \
+      res.val[i] = s1.val[i * 2] + s1.val[i * 2 + 1];             \
+      res.val[i + count / 2] = s2.val[i * 2] + s2.val[i * 2 + 1]; \
+    }                                                             \
+    Push(WasmValue(Simd128(res)));                                \
+    return true;                                                  \
+  }
+        ADD_HORIZ_CASE(I32x4AddHoriz, i32x4, int4, 4)
+        ADD_HORIZ_CASE(F32x4AddHoriz, f32x4, float4, 4)
+        ADD_HORIZ_CASE(I16x8AddHoriz, i16x8, int8, 8)
+#undef ADD_HORIZ_CASE
+      case kExprS8x16Shuffle: {
+        Simd8x16ShuffleImmediate<Decoder::kNoValidate> imm(decoder,
+                                                           code->at(pc));
+        len += 16;
+        int16 v2 = Pop().to_s128().to_i8x16();
+        int16 v1 = Pop().to_s128().to_i8x16();
+        int16 res;
+        for (size_t i = 0; i < kSimd128Size; ++i) {
+          int lane = imm.shuffle[i];
+          res.val[i] =
+              lane < kSimd128Size ? v1.val[lane] : v2.val[lane - kSimd128Size];
+        }
+        Push(WasmValue(Simd128(res)));
+        return true;
+      }
+#define REDUCTION_CASE(op, name, stype, count, operation) \
+  case kExpr##op: {                                       \
+    stype s = Pop().to_s128().to_##name();                \
+    int32_t res = s.val[0];                               \
+    for (size_t i = 1; i < count; ++i) {                  \
+      res = res operation static_cast<int32_t>(s.val[i]); \
+    }                                                     \
+    Push(WasmValue(res));                                 \
+    return true;                                          \
+  }
+        REDUCTION_CASE(S1x4AnyTrue, i32x4, int4, 4, |)
+        REDUCTION_CASE(S1x4AllTrue, i32x4, int4, 4, &)
+        REDUCTION_CASE(S1x8AnyTrue, i16x8, int8, 8, |)
+        REDUCTION_CASE(S1x8AllTrue, i16x8, int8, 8, &)
+        REDUCTION_CASE(S1x16AnyTrue, i8x16, int16, 16, |)
+        REDUCTION_CASE(S1x16AllTrue, i8x16, int16, 16, &)
+#undef REDUCTION_CASE
       default:
         return false;
     }
@@ -2274,7 +2404,8 @@ class ThreadImpl {
           MemoryIndexImmediate<Decoder::kNoValidate> imm(&decoder,
                                                          code->at(pc));
           uint32_t delta_pages = Pop().to<uint32_t>();
-          Handle<WasmMemoryObject> memory(instance_object_->memory_object());
+          Handle<WasmMemoryObject> memory(instance_object_->memory_object(),
+                                          instance_object_->GetIsolate());
           Isolate* isolate = memory->GetIsolate();
           int32_t result = WasmMemoryObject::Grow(isolate, memory, delta_pages);
           Push(WasmValue(result));

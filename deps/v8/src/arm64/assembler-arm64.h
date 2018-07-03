@@ -898,9 +898,7 @@ class Assembler : public AssemblerBase {
   // buffer for code generation and assumes its size to be buffer_size. If the
   // buffer is too small, a fatal error occurs. No deallocation of the buffer is
   // done upon destruction of the assembler.
-  Assembler(Isolate* isolate, void* buffer, int buffer_size)
-      : Assembler(IsolateData(isolate), buffer, buffer_size) {}
-  Assembler(IsolateData isolate_data, void* buffer, int buffer_size);
+  Assembler(const Options& options, void* buffer, int buffer_size);
 
   virtual ~Assembler();
 
@@ -2887,6 +2885,10 @@ class Assembler : public AssemblerBase {
     return reinterpret_cast<byte*>(instr) - buffer_;
   }
 
+  static const char* GetSpecialRegisterName(int code) {
+    return (code == kSPRegInternalCode) ? "sp" : "UNKNOWN";
+  }
+
   // Register encoding.
   static Instr Rd(CPURegister rd) {
     DCHECK_NE(rd.code(), kSPRegInternalCode);
@@ -3622,8 +3624,8 @@ class PatchingAssembler : public Assembler {
   // relocation information takes space in the buffer, the PatchingAssembler
   // will crash trying to grow the buffer.
   // Note that the instruction cache will not be flushed.
-  PatchingAssembler(IsolateData isolate_data, byte* start, unsigned count)
-      : Assembler(isolate_data, start, count * kInstructionSize + kGap) {
+  PatchingAssembler(const Options& options, byte* start, unsigned count)
+      : Assembler(options, start, count * kInstructionSize + kGap) {
     // Block constant pool emission.
     StartBlockPools();
   }

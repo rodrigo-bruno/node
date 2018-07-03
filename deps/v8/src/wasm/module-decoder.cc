@@ -479,20 +479,21 @@ class ModuleDecoderImpl : public Decoder {
           WasmIndirectFunctionTable* table = &module_->function_tables.back();
           table->imported = true;
           expect_u8("element type", kWasmAnyFunctionTypeCode);
+          uint8_t flags = validate_table_flags("element count");
           consume_resizable_limits(
               "element count", "elements", FLAG_wasm_max_table_size,
               &table->initial_size, &table->has_maximum_size,
-              FLAG_wasm_max_table_size, &table->maximum_size);
+              FLAG_wasm_max_table_size, &table->maximum_size, flags);
           break;
         }
         case kExternalMemory: {
           // ===== Imported memory =========================================
           if (!AddMemory(module_.get())) break;
+          uint8_t flags = validate_memory_flags(&module_->has_shared_memory);
           consume_resizable_limits(
               "memory", "pages", FLAG_wasm_max_mem_pages,
               &module_->initial_pages, &module_->has_maximum_pages,
-              kSpecMaxWasmMemoryPages, &module_->maximum_pages,
-              &module_->has_shared_memory);
+              kSpecMaxWasmMemoryPages, &module_->maximum_pages, flags);
           break;
         }
         case kExternalGlobal: {
@@ -525,9 +526,12 @@ class ModuleDecoderImpl : public Decoder {
     auto counter =
         SELECT_WASM_COUNTER(GetCounters(), origin_, wasm_functions_per, module);
     counter->AddSample(static_cast<int>(functions_count));
-    module_->functions.reserve(functions_count);
+    DCHECK_EQ(module_->functions.size(), module_->num_imported_functions);
+    uint32_t total_function_count =
+        module_->num_imported_functions + functions_count;
+    module_->functions.reserve(total_function_count);
     module_->num_declared_functions = functions_count;
-    for (uint32_t i = 0; ok() && i < functions_count; ++i) {
+    for (uint32_t i = 0; i < functions_count; ++i) {
       uint32_t func_index = static_cast<uint32_t>(module_->functions.size());
       module_->functions.push_back({nullptr,     // sig
                                     func_index,  // func_index
@@ -537,7 +541,9 @@ class ModuleDecoderImpl : public Decoder {
                                     false});     // exported
       WasmFunction* function = &module_->functions.back();
       function->sig_index = consume_sig_index(module_.get(), &function->sig);
+      if (!ok()) return;
     }
+    DCHECK_EQ(module_->functions.size(), total_function_count);
   }
 
   void DecodeTableSection() {
@@ -548,10 +554,11 @@ class ModuleDecoderImpl : public Decoder {
       module_->function_tables.emplace_back();
       WasmIndirectFunctionTable* table = &module_->function_tables.back();
       expect_u8("table type", kWasmAnyFunctionTypeCode);
-      consume_resizable_limits("table elements", "elements",
-                               FLAG_wasm_max_table_size, &table->initial_size,
-                               &table->has_maximum_size,
-                               FLAG_wasm_max_table_size, &table->maximum_size);
+      uint8_t flags = validate_table_flags("table elements");
+      consume_resizable_limits(
+          "table elements", "elements", FLAG_wasm_max_table_size,
+          &table->initial_size, &table->has_maximum_size,
+          FLAG_wasm_max_table_size, &table->maximum_size, flags);
     }
   }
 
@@ -560,10 +567,11 @@ class ModuleDecoderImpl : public Decoder {
 
     for (uint32_t i = 0; ok() && i < memory_count; i++) {
       if (!AddMemory(module_.get())) break;
+      uint8_t flags = validate_memory_flags(&module_->has_shared_memory);
       consume_resizable_limits(
           "memory", "pages", FLAG_wasm_max_mem_pages, &module_->initial_pages,
           &module_->has_maximum_pages, kSpecMaxWasmMemoryPages,
-          &module_->maximum_pages, &module_->has_shared_memory);
+          &module_->maximum_pages, flags);
     }
   }
 
@@ -1090,33 +1098,43 @@ class ModuleDecoderImpl : public Decoder {
     return index;
   }
 
-  void consume_resizable_limits(const char* name, const char* units,
-                                uint32_t max_initial, uint32_t* initial,
-                                bool* has_max, uint32_t max_maximum,
-                                uint32_t* maximum,
-                                bool* has_shared_memory = nullptr) {
+  uint8_t validate_table_flags(const char* name) {
     uint8_t flags = consume_u8("resizable limits flags");
     const byte* pos = pc();
+    if (flags & 0xFE) {
+      errorf(pos - 1, "invalid %s limits flags", name);
+    }
+    return flags;
+  }
 
+  uint8_t validate_memory_flags(bool* has_shared_memory) {
+    uint8_t flags = consume_u8("resizable limits flags");
+    const byte* pos = pc();
+    *has_shared_memory = false;
     if (FLAG_experimental_wasm_threads) {
-      bool is_memory = (strcmp(name, "memory") == 0);
-      if (flags & 0xFC || (!is_memory && (flags & 0xFE))) {
-        errorf(pos - 1, "invalid %s limits flags", name);
-      }
-      if (flags == 3) {
+      if (flags & 0xFC) {
+        errorf(pos - 1, "invalid memory limits flags");
+      } else if (flags == 3) {
         DCHECK_NOT_NULL(has_shared_memory);
         *has_shared_memory = true;
       } else if (flags == 2) {
         errorf(pos - 1,
-               "%s limits flags should have maximum defined if shared is true",
-               name);
+               "memory limits flags should have maximum defined if shared is "
+               "true");
       }
     } else {
       if (flags & 0xFE) {
-        errorf(pos - 1, "invalid %s limits flags", name);
+        errorf(pos - 1, "invalid memory limits flags");
       }
     }
+    return flags;
+  }
 
+  void consume_resizable_limits(const char* name, const char* units,
+                                uint32_t max_initial, uint32_t* initial,
+                                bool* has_max, uint32_t max_maximum,
+                                uint32_t* maximum, uint8_t flags) {
+    const byte* pos = pc();
     *initial = consume_u32v("initial size");
     *has_max = false;
     if (*initial > max_initial) {

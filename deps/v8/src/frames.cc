@@ -460,14 +460,16 @@ StackFrame::Type StackFrame::ComputeType(const StackFrameIteratorBase* iterator,
         iterator->isolate()->wasm_engine()->code_manager()->LookupCode(pc);
     if (wasm_code != nullptr) {
       switch (wasm_code->kind()) {
-        case wasm::WasmCode::kInterpreterEntry:
-          return WASM_INTERPRETER_ENTRY;
         case wasm::WasmCode::kFunction:
           return WASM_COMPILED;
-        case wasm::WasmCode::kLazyStub:
-          return WASM_COMPILE_LAZY;
         case wasm::WasmCode::kWasmToJsWrapper:
           return WASM_TO_JS;
+        case wasm::WasmCode::kLazyStub:
+          return WASM_COMPILE_LAZY;
+        case wasm::WasmCode::kRuntimeStub:
+          return STUB;
+        case wasm::WasmCode::kInterpreterEntry:
+          return WASM_INTERPRETER_ENTRY;
         default:
           UNREACHABLE();
       }
@@ -1050,7 +1052,8 @@ void JavaScriptFrame::GetFunctions(
   std::vector<SharedFunctionInfo*> raw_functions;
   GetFunctions(&raw_functions);
   for (const auto& raw_function : raw_functions) {
-    functions->push_back(Handle<SharedFunctionInfo>(raw_function));
+    functions->push_back(
+        Handle<SharedFunctionInfo>(raw_function, function()->GetIsolate()));
   }
 }
 
@@ -1324,7 +1327,8 @@ int FrameSummary::WasmFrameSummary::SourcePosition() const {
 }
 
 Handle<Script> FrameSummary::WasmFrameSummary::script() const {
-  return handle(wasm_instance()->module_object()->script());
+  return handle(wasm_instance()->module_object()->script(),
+                wasm_instance()->GetIsolate());
 }
 
 Handle<String> FrameSummary::WasmFrameSummary::FunctionName() const {
@@ -1770,7 +1774,7 @@ void WasmCompiledFrame::Print(StringStream* accumulator, PrintMode mode,
   int func_name_len = std::min(kMaxPrintedFunctionName, raw_func_name.length());
   memcpy(func_name, raw_func_name.start(), func_name_len);
   func_name[func_name_len] = '\0';
-  accumulator->Add("], function #%u ('%s'), pc=%p, pos=%d\n",
+  accumulator->Add("], function #%u ('%s'), pc=+0x%x, pos=%d\n",
                    this->function_index(), func_name, pc, this->position());
   if (mode != OVERVIEW) accumulator->Add("\n");
 }
@@ -1799,10 +1803,6 @@ WasmInstanceObject* WasmCompiledFrame::wasm_instance() const {
 
 WasmModuleObject* WasmCompiledFrame::module_object() const {
   return wasm_instance()->module_object();
-}
-
-WasmCompiledModule* WasmCompiledFrame::compiled_module() const {
-  return wasm_instance()->compiled_module();
 }
 
 uint32_t WasmCompiledFrame::function_index() const {
@@ -1895,10 +1895,6 @@ WasmDebugInfo* WasmInterpreterEntryFrame::debug_info() const {
 
 WasmModuleObject* WasmInterpreterEntryFrame::module_object() const {
   return wasm_instance()->module_object();
-}
-
-WasmCompiledModule* WasmInterpreterEntryFrame::compiled_module() const {
-  return wasm_instance()->compiled_module();
 }
 
 Script* WasmInterpreterEntryFrame::script() const {

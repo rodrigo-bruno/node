@@ -174,20 +174,15 @@ bool AreAliased(DoubleRegister reg1, DoubleRegister reg2,
 
 class TurboAssembler : public TurboAssemblerBase {
  public:
-  TurboAssembler(Isolate* isolate, void* buffer, int buffer_size,
-                 CodeObjectRequired create_code_object)
-      : TurboAssemblerBase(isolate, buffer, buffer_size, create_code_object) {}
-  TurboAssembler(IsolateData isolate_data, void* buffer, int buffer_size)
-      : TurboAssemblerBase(isolate_data, buffer, buffer_size) {}
+  TurboAssembler(Isolate* isolate, const Options& options, void* buffer,
+                 int buffer_size, CodeObjectRequired create_code_object)
+      : TurboAssemblerBase(isolate, options, buffer, buffer_size,
+                           create_code_object) {}
 
-#ifdef V8_EMBEDDED_BUILTINS
   void LoadFromConstantsTable(Register destination,
                               int constant_index) override;
-  void LoadExternalReference(Register destination,
-                             int reference_index) override;
-  void LoadBuiltin(Register destination, int builtin_index) override;
   void LoadRootRegisterOffset(Register destination, intptr_t offset) override;
-#endif  // V8_EMBEDDED_BUILTINS
+  void LoadRootRelative(Register destination, int32_t offset) override;
 
   // Returns the size of a call in instructions.
   static int CallSize(Register target);
@@ -215,7 +210,9 @@ class TurboAssembler : public TurboAssemblerBase {
   void Ret() { b(r14); }
   void Ret(Condition cond) { b(cond, r14); }
 
-  void CallForDeoptimization(Address target, RelocInfo::Mode rmode) {
+  void CallForDeoptimization(Address target, int deopt_id,
+                             RelocInfo::Mode rmode) {
+    USE(deopt_id);
     Call(target, rmode);
   }
 
@@ -680,6 +677,7 @@ class TurboAssembler : public TurboAssemblerBase {
     ExternalReference roots_array_start =
         ExternalReference::roots_array_start(isolate());
     mov(kRootRegister, Operand(roots_array_start));
+    AddP(kRootRegister, kRootRegister, Operand(kRootRegisterBias));
   }
 
   // Flush the I-cache from asm code. You should use CpuFeatures::FlushICache
@@ -1062,7 +1060,11 @@ class TurboAssembler : public TurboAssemblerBase {
 class MacroAssembler : public TurboAssembler {
  public:
   MacroAssembler(Isolate* isolate, void* buffer, int size,
-                 CodeObjectRequired create_code_object);
+                 CodeObjectRequired create_code_object)
+      : MacroAssembler(isolate, Assembler::DefaultOptions(isolate), buffer,
+                       size, create_code_object) {}
+  MacroAssembler(Isolate* isolate, const Options& options, void* buffer,
+                 int size, CodeObjectRequired create_code_object);
 
   // Call a code stub.
   void TailCallStub(CodeStub* stub, Condition cond = al);

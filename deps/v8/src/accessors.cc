@@ -46,11 +46,11 @@ Handle<AccessorInfo> Accessors::MakeAccessor(
   return info;
 }
 
-static V8_INLINE bool CheckForName(Handle<Name> name,
+static V8_INLINE bool CheckForName(Isolate* isolate, Handle<Name> name,
                                    Handle<String> property_name, int offset,
                                    FieldIndex::Encoding encoding,
                                    FieldIndex* index) {
-  if (Name::Equals(name, property_name)) {
+  if (Name::Equals(isolate, name, property_name)) {
     *index = FieldIndex::ForInObjectOffset(offset, encoding);
     return true;
   }
@@ -64,11 +64,11 @@ bool Accessors::IsJSObjectFieldAccessor(Isolate* isolate, Handle<Map> map,
                                         Handle<Name> name, FieldIndex* index) {
   switch (map->instance_type()) {
     case JS_ARRAY_TYPE:
-      return CheckForName(name, isolate->factory()->length_string(),
+      return CheckForName(isolate, name, isolate->factory()->length_string(),
                           JSArray::kLengthOffset, FieldIndex::kTagged, index);
     default:
       if (map->instance_type() < FIRST_NONSTRING_TYPE) {
-        return CheckForName(name, isolate->factory()->length_string(),
+        return CheckForName(isolate, name, isolate->factory()->length_string(),
                             String::kLengthOffset, FieldIndex::kTagged, index);
       }
 
@@ -236,7 +236,8 @@ void Accessors::ModuleNamespaceEntryGetter(
   JSModuleNamespace* holder =
       JSModuleNamespace::cast(*Utils::OpenHandle(*info.Holder()));
   Handle<Object> result;
-  if (!holder->GetExport(Handle<String>::cast(Utils::OpenHandle(*name)))
+  if (!holder
+           ->GetExport(isolate, Handle<String>::cast(Utils::OpenHandle(*name)))
            .ToHandle(&result)) {
     isolate->OptionalRescheduleException(false);
   } else {
@@ -553,9 +554,11 @@ void Accessors::ScriptEvalFromScriptGetter(
       Script::cast(Handle<JSValue>::cast(object)->value()), isolate);
   Handle<Object> result = isolate->factory()->undefined_value();
   if (script->has_eval_from_shared()) {
-    Handle<SharedFunctionInfo> eval_from_shared(script->eval_from_shared());
+    Handle<SharedFunctionInfo> eval_from_shared(script->eval_from_shared(),
+                                                isolate);
     if (eval_from_shared->script()->IsScript()) {
-      Handle<Script> eval_from_script(Script::cast(eval_from_shared->script()));
+      Handle<Script> eval_from_script(Script::cast(eval_from_shared->script()),
+                                      isolate);
       result = Script::GetWrapper(eval_from_script);
     }
   }
@@ -614,7 +617,7 @@ void Accessors::ScriptEvalFromFunctionNameGetter(
       Script::cast(Handle<JSValue>::cast(object)->value()), isolate);
   Handle<Object> result = isolate->factory()->undefined_value();
   if (script->has_eval_from_shared()) {
-    Handle<SharedFunctionInfo> shared(script->eval_from_shared());
+    Handle<SharedFunctionInfo> shared(script->eval_from_shared(), isolate);
     // Find the name of the function calling eval.
     result = Handle<Object>(shared->Name(), isolate);
   }

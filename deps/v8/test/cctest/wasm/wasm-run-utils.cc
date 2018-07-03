@@ -29,12 +29,10 @@ TestingModuleBuilder::TestingModuleBuilder(
   uint32_t maybe_import_index = 0;
   if (maybe_import) {
     // Manually add an imported function before any other functions.
-    // This must happen before the instance objectis created, since the
+    // This must happen before the instance object is created, since the
     // instance object allocates import entries.
-    maybe_import_index = AddFunction(maybe_import->sig, nullptr);
+    maybe_import_index = AddFunction(maybe_import->sig, nullptr, kImport);
     DCHECK_EQ(0, maybe_import_index);
-    test_module_->num_imported_functions = 1;
-    test_module_->functions[0].imported = true;
   }
 
   instance_object_ = InitInstanceObject();
@@ -47,9 +45,6 @@ TestingModuleBuilder::TestingModuleBuilder(
         maybe_import_index, test_module_->origin,
         trap_handler::IsTrapHandlerEnabled() ? kUseTrapHandler
                                              : kNoTrapHandler);
-    if (native_module_->num_functions() <= maybe_import_index) {
-      native_module_->SetNumFunctionsForTesting(maybe_import_index + 1);
-    }
     auto wasm_to_js_wrapper = native_module_->AddCodeCopy(
         code.ToHandleChecked(), wasm::WasmCode::kWasmToJsWrapper,
         maybe_import_index);
@@ -93,20 +88,28 @@ byte* TestingModuleBuilder::AddMemory(uint32_t size) {
   return mem_start_;
 }
 
-uint32_t TestingModuleBuilder::AddFunction(FunctionSig* sig, const char* name) {
+uint32_t TestingModuleBuilder::AddFunction(FunctionSig* sig, const char* name,
+                                           FunctionType type) {
   if (test_module_->functions.size() == 0) {
     // TODO(titzer): Reserving space here to avoid the underlying WasmFunction
     // structs from moving.
     test_module_->functions.reserve(kMaxFunctions);
   }
   uint32_t index = static_cast<uint32_t>(test_module_->functions.size());
-  if (native_module_ && native_module_->num_functions() <= index) {
-    native_module_->SetNumFunctionsForTesting(index + 1);
-  }
   test_module_->functions.push_back({sig, index, 0, {0, 0}, false, false});
+  if (type == kImport) {
+    DCHECK_EQ(0, test_module_->num_declared_functions);
+    ++test_module_->num_imported_functions;
+    test_module_->functions.back().imported = true;
+  } else {
+    ++test_module_->num_declared_functions;
+  }
+  DCHECK_EQ(test_module_->functions.size(),
+            test_module_->num_imported_functions +
+                test_module_->num_declared_functions);
   if (name) {
     Vector<const byte> name_vec = Vector<const byte>::cast(CStrVector(name));
-    test_module_->AddNameForTesting(
+    test_module_->AddFunctionNameForTesting(
         index, {AddBytes(name_vec), static_cast<uint32_t>(name_vec.length())});
   }
   if (interpreter_) {
@@ -175,19 +178,16 @@ void TestingModuleBuilder::PopulateIndirectFunctionTable() {
 }
 
 uint32_t TestingModuleBuilder::AddBytes(Vector<const byte> bytes) {
-  Handle<WasmModuleObject> module_object(instance_object_->module_object(),
-                                         isolate_);
-  Handle<SeqOneByteString> old_bytes(module_object->module_bytes(), isolate_);
-  uint32_t old_size = static_cast<uint32_t>(old_bytes->length());
+  Vector<const uint8_t> old_bytes = native_module_->wire_bytes();
+  uint32_t old_size = static_cast<uint32_t>(old_bytes.size());
   // Avoid placing strings at offset 0, this might be interpreted as "not
   // set", e.g. for function names.
   uint32_t bytes_offset = old_size ? old_size : 1;
-  ScopedVector<byte> new_bytes(bytes_offset + bytes.length());
-  memcpy(new_bytes.start(), old_bytes->GetChars(), old_size);
+  size_t new_size = bytes_offset + bytes.size();
+  OwnedVector<uint8_t> new_bytes = OwnedVector<uint8_t>::New(new_size);
+  memcpy(new_bytes.start(), old_bytes.start(), old_size);
   memcpy(new_bytes.start() + bytes_offset, bytes.start(), bytes.length());
-  Handle<SeqOneByteString> new_bytes_str = Handle<SeqOneByteString>::cast(
-      isolate_->factory()->NewStringFromOneByte(new_bytes).ToHandleChecked());
-  module_object->set_module_bytes(*new_bytes_str);
+  native_module_->set_wire_bytes(std::move(new_bytes));
   return bytes_offset;
 }
 
@@ -210,30 +210,22 @@ const WasmGlobal* TestingModuleBuilder::AddGlobal(ValueType type) {
 }
 
 Handle<WasmInstanceObject> TestingModuleBuilder::InitInstanceObject() {
-  Handle<SeqOneByteString> empty_string = Handle<SeqOneByteString>::cast(
-      isolate_->factory()->NewStringFromOneByte({}).ToHandleChecked());
   Handle<Script> script =
       isolate_->factory()->NewScript(isolate_->factory()->empty_string());
   script->set_type(Script::TYPE_WASM);
   Handle<FixedArray> export_wrappers = isolate_->factory()->NewFixedArray(0);
   ModuleEnv env = CreateModuleEnv();
   Handle<WasmModuleObject> module_object =
-      WasmModuleObject::New(isolate_, export_wrappers, test_module_, env,
-                            empty_string, script, Handle<ByteArray>::null());
-  Handle<WasmCompiledModule> compiled_module(module_object->compiled_module(),
-                                             isolate_);
+      WasmModuleObject::New(isolate_, export_wrappers, test_module_, env, {},
+                            script, Handle<ByteArray>::null());
   // This method is called when we initialize TestEnvironment. We don't
   // have a memory yet, so we won't create it here. We'll update the
   // interpreter when we get a memory. We do have globals, though.
-  native_module_ = compiled_module->GetNativeModule();
+  native_module_ = module_object->native_module();
   native_module_->ReserveCodeTableForTesting(kMaxFunctions);
 
-  DCHECK(compiled_module->IsWasmCompiledModule());
-  auto instance =
-      WasmInstanceObject::New(isolate_, module_object, compiled_module);
+  auto instance = WasmInstanceObject::New(isolate_, module_object);
   instance->set_globals_start(globals_data_);
-  Handle<WeakCell> weak_instance = isolate()->factory()->NewWeakCell(instance);
-  compiled_module->set_weak_owning_instance(*weak_instance);
   return instance;
 }
 
@@ -295,7 +287,10 @@ void WasmFunctionWrapper::Init(CallDescriptor* call_descriptor,
 
   // Function, context_address, effect, and control.
   Node** parameters = zone()->NewArray<Node*>(param_types.length() + 4);
-  graph()->SetStart(graph()->NewNode(common()->Start(7)));
+  int start_value_output_count =
+      static_cast<int>(signature_->parameter_count()) + 1;
+  graph()->SetStart(
+      graph()->NewNode(common()->Start(start_value_output_count)));
   Node* effect = graph()->start();
   int parameter_count = 0;
 
@@ -404,22 +399,20 @@ void WasmFunctionCompiler::Build(const byte* start, const byte* end) {
     interpreter_->SetFunctionCodeForTesting(function_, start, end);
   }
 
-  Handle<WasmCompiledModule> compiled_module(
-      builder_->instance_object()->compiled_module(), isolate());
-  NativeModule* native_module = compiled_module->GetNativeModule();
-  Handle<SeqOneByteString> wire_bytes(
-      builder_->instance_object()->module_object()->module_bytes(), isolate());
+  Vector<const uint8_t> wire_bytes = builder_->instance_object()
+                                         ->module_object()
+                                         ->native_module()
+                                         ->wire_bytes();
 
   ModuleEnv module_env = builder_->CreateModuleEnv();
   ErrorThrower thrower(isolate(), "WasmFunctionCompiler::Build");
   ScopedVector<uint8_t> func_wire_bytes(function_->code.length());
-  memcpy(func_wire_bytes.start(),
-         wire_bytes->GetChars() + function_->code.offset(),
+  memcpy(func_wire_bytes.start(), wire_bytes.start() + function_->code.offset(),
          func_wire_bytes.length());
   WireBytesRef func_name_ref =
-      module_env.module->LookupName(*wire_bytes, function_->func_index);
+      module_env.module->LookupFunctionName(wire_bytes, function_->func_index);
   ScopedVector<char> func_name(func_name_ref.length());
-  memcpy(func_name.start(), wire_bytes->GetChars() + func_name_ref.offset(),
+  memcpy(func_name.start(), wire_bytes.start() + func_name_ref.offset(),
          func_name_ref.length());
 
   FunctionBody func_body{function_->sig, function_->code.offset(),
@@ -428,6 +421,8 @@ void WasmFunctionCompiler::Build(const byte* start, const byte* end) {
       builder_->execution_mode() == WasmExecutionMode::kExecuteLiftoff
           ? WasmCompilationUnit::CompilationMode::kLiftoff
           : WasmCompilationUnit::CompilationMode::kTurbofan;
+  NativeModule* native_module =
+      builder_->instance_object()->module_object()->native_module();
   WasmCompilationUnit unit(isolate(), &module_env, native_module, func_body,
                            func_name, function_->func_index, comp_mode,
                            isolate()->counters(), builder_->lower_simd());
@@ -452,7 +447,7 @@ WasmFunctionCompiler::WasmFunctionCompiler(Zone* zone, FunctionSig* sig,
       source_position_table_(this->graph()),
       interpreter_(builder->interpreter()) {
   // Get a new function from the testing module.
-  int index = builder->AddFunction(sig, name);
+  int index = builder->AddFunction(sig, name, TestingModuleBuilder::kWasm);
   function_ = builder_->GetFunctionAt(index);
 }
 

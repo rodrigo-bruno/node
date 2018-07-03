@@ -21,10 +21,13 @@
 
 namespace v8 {
 namespace internal {
-namespace wasm {
 
 // Forward declarations.
-struct ModuleEnv;
+namespace compiler {
+class CallDescriptor;
+}
+
+namespace wasm {
 
 class LiftoffAssembler : public TurboAssembler {
  public:
@@ -295,16 +298,6 @@ class LiftoffAssembler : public TurboAssembler {
     return SpillOneRegister(candidates, pinned);
   }
 
-  void DropStackSlot(VarState* slot) {
-    // The only loc we care about is register. Other types don't occupy
-    // anything.
-    if (!slot->is_reg()) return;
-    // Free the register, then set the loc to "stack".
-    // No need to write back, the value should be dropped.
-    cache_state_.dec_used(slot->reg());
-    slot->MakeStack();
-  }
-
   void MergeFullStackWith(CacheState&);
   void MergeStackWith(CacheState&, uint32_t arity);
 
@@ -340,6 +333,9 @@ class LiftoffAssembler : public TurboAssembler {
   };
   void ParallelRegisterMove(std::initializer_list<ParallelRegisterMoveTuple>);
 
+  // Validate that the register use counts reflect the state of the cache.
+  bool ValidateCacheState() const;
+
   ////////////////////////////////////
   // Platform-specific part.        //
   ////////////////////////////////////
@@ -348,8 +344,8 @@ class LiftoffAssembler : public TurboAssembler {
   // size of the stack frame is known. It returns an offset in the machine code
   // which can later be patched (via {PatchPrepareStackFrame)} when the size of
   // the frame is known.
-  inline uint32_t PrepareStackFrame();
-  inline void PatchPrepareStackFrame(uint32_t offset, uint32_t stack_slots);
+  inline int PrepareStackFrame();
+  inline void PatchPrepareStackFrame(int offset, uint32_t stack_slots);
   inline void FinishCode();
   inline void AbortCompilation();
 
@@ -520,7 +516,7 @@ class LiftoffAssembler : public TurboAssembler {
   inline void emit_f64_set_cond(Condition condition, Register dst,
                                 DoubleRegister lhs, DoubleRegister rhs);
 
-  inline void StackCheck(Label* ool_code);
+  inline void StackCheck(Label* ool_code, Register limit_address);
 
   inline void CallTrapCallbackForTesting();
 

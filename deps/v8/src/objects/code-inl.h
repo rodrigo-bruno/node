@@ -225,9 +225,10 @@ void Code::set_next_code_link(Object* value) {
 }
 
 int Code::InstructionSize() const {
-#ifdef V8_EMBEDDED_BUILTINS
-  if (Builtins::IsEmbeddedBuiltin(this)) return OffHeapInstructionSize();
-#endif
+  if (is_off_heap_trampoline()) {
+    DCHECK(FLAG_embedded_builtins);
+    return OffHeapInstructionSize();
+  }
   return raw_instruction_size();
 }
 
@@ -236,9 +237,10 @@ Address Code::raw_instruction_start() const {
 }
 
 Address Code::InstructionStart() const {
-#ifdef V8_EMBEDDED_BUILTINS
-  if (Builtins::IsEmbeddedBuiltin(this)) return OffHeapInstructionStart();
-#endif
+  if (is_off_heap_trampoline()) {
+    DCHECK(FLAG_embedded_builtins);
+    return OffHeapInstructionStart();
+  }
   return raw_instruction_start();
 }
 
@@ -247,9 +249,10 @@ Address Code::raw_instruction_end() const {
 }
 
 Address Code::InstructionEnd() const {
-#ifdef V8_EMBEDDED_BUILTINS
-  if (Builtins::IsEmbeddedBuiltin(this)) return OffHeapInstructionEnd();
-#endif
+  if (is_off_heap_trampoline()) {
+    DCHECK(FLAG_embedded_builtins);
+    return OffHeapInstructionEnd();
+  }
   return raw_instruction_end();
 }
 
@@ -314,12 +317,11 @@ int Code::relocation_size() const {
 Address Code::entry() const { return raw_instruction_start(); }
 
 bool Code::contains(Address inner_pointer) {
-#ifdef V8_EMBEDDED_BUILTINS
-  if (Builtins::IsEmbeddedBuiltin(this)) {
+  if (is_off_heap_trampoline()) {
+    DCHECK(FLAG_embedded_builtins);
     return (OffHeapInstructionStart() <= inner_pointer) &&
            (inner_pointer < OffHeapInstructionEnd());
   }
-#endif
   return (address() <= inner_pointer) && (inner_pointer < address() + Size());
 }
 
@@ -337,13 +339,15 @@ Code::Kind Code::kind() const {
 }
 
 void Code::initialize_flags(Kind kind, bool has_unwinding_info,
-                            bool is_turbofanned, int stack_slots) {
+                            bool is_turbofanned, int stack_slots,
+                            bool is_off_heap_trampoline) {
   CHECK(0 <= stack_slots && stack_slots < StackSlotsField::kMax);
   static_assert(Code::NUMBER_OF_KINDS <= KindField::kMax + 1, "field overflow");
   uint32_t flags = HasUnwindingInfoField::encode(has_unwinding_info) |
                    KindField::encode(kind) |
                    IsTurbofannedField::encode(is_turbofanned) |
-                   StackSlotsField::encode(stack_slots);
+                   StackSlotsField::encode(stack_slots) |
+                   IsOffHeapTrampoline::encode(is_off_heap_trampoline);
   WRITE_UINT32_FIELD(this, kFlagsOffset, flags);
   DCHECK_IMPLIES(stack_slots != 0, has_safepoint_info());
 }
@@ -435,6 +439,10 @@ inline void Code::set_is_exception_caught(bool value) {
   int previous = code_data_container()->kind_specific_flags();
   int updated = IsExceptionCaughtField::update(previous, value);
   code_data_container()->set_kind_specific_flags(updated);
+}
+
+inline bool Code::is_off_heap_trampoline() const {
+  return IsOffHeapTrampoline::decode(READ_UINT32_FIELD(this, kFlagsOffset));
 }
 
 inline HandlerTable::CatchPrediction Code::GetBuiltinCatchPrediction() {
@@ -530,6 +538,14 @@ Address Code::constant_pool() const {
 }
 
 Code* Code::GetCodeFromTargetAddress(Address address) {
+  {
+    // TODO(jgruber,v8:6666): Support embedded builtins here. We'd need to pass
+    // in the current isolate.
+    Address start = reinterpret_cast<Address>(Isolate::CurrentEmbeddedBlob());
+    Address end = start + Isolate::CurrentEmbeddedBlobSize();
+    CHECK(address < start || address >= end);
+  }
+
   HeapObject* code = HeapObject::FromAddress(address - Code::kHeaderSize);
   // GetCodeFromTargetAddress might be called when marking objects during mark
   // sweep. reinterpret_cast is therefore used instead of the more appropriate

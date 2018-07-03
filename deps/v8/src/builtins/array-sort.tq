@@ -50,24 +50,32 @@ module array {
   }
 
   macro Store<ElementsAccessor : type>(
-      context: Context, receiver: Object, index: Smi, value: Object) {
+      context: Context, receiver: Object, elements: Object, index: Smi,
+      value: Object)
+  labels Bailout {
     SetProperty(context, receiver, index, value, kStrict);
   }
 
   Store<FastPackedSmiElements>(
-      context: Context, elements: Object, index: Smi, value: Object) {
+      context: Context, receiver: Object, elements: Object, index: Smi,
+      value: Object)
+  labels Bailout {
     let elems: FixedArray = unsafe_cast<FixedArray>(elements);
     elems[index] = value;
   }
 
   Store<FastSmiOrObjectElements>(
-      context: Context, elements: Object, index: Smi, value: Object) {
+      context: Context, receiver: Object, elements: Object, index: Smi,
+      value: Object)
+  labels Bailout {
     let elems: FixedArray = unsafe_cast<FixedArray>(elements);
     elems[index] = value;
   }
 
   Store<FastDoubleElements>(
-      context: Context, elements: Object, index: Smi, value: Object) {
+      context: Context, receiver: Object, elements: Object, index: Smi,
+      value: Object)
+  labels Bailout {
     let elems: FixedDoubleArray = unsafe_cast<FixedDoubleArray>(elements);
     let heap_val: HeapNumber = unsafe_cast<HeapNumber>(value);
     // Make sure we do not store signalling NaNs into double arrays.
@@ -82,18 +90,20 @@ module array {
   }
 
   Store<DictionaryElements>(
-      context: Context, elements: Object, index: Smi, value: Object) {
+      context: Context, receiver: Object, elements: Object, index: Smi,
+      value: Object)
+  labels Bailout {
+    let dictionary: NumberDictionary = unsafe_cast<NumberDictionary>(elements);
+    let intptr_index: intptr = convert<intptr>(index);
     try {
-      let dictionary: NumberDictionary =
-          unsafe_cast<NumberDictionary>(elements);
-      let intptr_index: intptr = convert<intptr>(index);
       BasicStoreNumberDictionaryElement(dictionary, intptr_index, value)
-      otherwise Fail, Fail;
-      return;
+      otherwise Bailout, Bailout, ReadOnly;
     }
-    label Fail {
-      unreachable;
+    label ReadOnly {
+      ThrowTypeError(context, kStrictReadOnlyProperty, index, Typeof(receiver),
+          receiver);
     }
+    return;
   }
 
   builtin SortCompareDefault(
@@ -192,7 +202,8 @@ module array {
   labels Bailout {
     for (let i: Smi = from + 1; i < to; ++i) {
       assert(CanUseSameAccessor<E>(
-          context, receiver, elements, initialReceiverMap, initialReceiverLength));
+          context, receiver, elements, initialReceiverMap,
+          initialReceiverLength));
 
       let element: Object = Load<E>(context, elements, i) otherwise Bailout;
       let j: Smi = i - 1;
@@ -207,12 +218,12 @@ module array {
             initialReceiverLength, userCmpFn, sortCompare, tmp, element)
         otherwise Bailout;
         if (order > 0) {
-          Store<E>(context, elements, j + 1, tmp);
+          Store<E>(context, receiver, elements, j + 1, tmp) otherwise Bailout;
         } else {
           break;
         }
       }
-      Store<E>(context, elements, j + 1, element);
+      Store<E>(context, receiver, elements, j + 1, element) otherwise Bailout;
     }
   }
 
@@ -232,7 +243,7 @@ module array {
   macro kInitialReceiverLengthIdx(): constexpr int31 {
     return 4;
   }
-  macro kElementsIdx(): constexpr int31 {
+  macro kElementsOrReceiverIdx(): constexpr int31 {
     return 5;
   }
   macro kRandomStateIdx(): constexpr int31 {
@@ -240,6 +251,13 @@ module array {
   }
   macro kSortStateSize(): intptr {
     return IntPtrConstant(7);
+  }
+
+  macro kFailure(): Smi {
+    return SmiConstant(-1);
+  }
+  macro kSuccess(): Smi {
+    return SmiConstant(0);
   }
 
   // Returns a random positive Smi in the range of [0, range).
@@ -320,13 +338,15 @@ module array {
     }
 
     // v0 <= v1 <= v2.
-    Store<E>(context, elements, from, v0);
-    Store<E>(context, elements, to - 1, v2);
+    Store<E>(context, receiver, elements, from, v0) otherwise Bailout;
+    Store<E>(context, receiver, elements, to - 1, v2) otherwise Bailout;
 
     // Move pivot element to a place on the left.
-    Swap<E>(context, elements, from + 1, third_index, v1) otherwise Bailout;
+    Swap<E>(context, receiver, elements, from + 1, third_index, v1)
+    otherwise Bailout;
     assert(CanUseSameAccessor<E>(
-        context, receiver, elements, initialReceiverMap, initialReceiverLength));
+        context, receiver, elements, initialReceiverMap,
+        initialReceiverLength));
 
     return v1;
   }
@@ -334,12 +354,12 @@ module array {
   // elements[indexB] = elements[indexA].
   // elements[indexA] = value.
   macro Swap<E : type>(
-      context: Context, elements: Object, indexA: Smi, indexB: Smi,
-      value: Object)
+      context: Context, receiver: Object, elements: Object, indexA: Smi,
+      indexB: Smi, value: Object)
   labels Bailout {
     let tmp: Object = Load<E>(context, elements, indexA) otherwise Bailout;
-    Store<E>(context, elements, indexB, tmp);
-    Store<E>(context, elements, indexA, value);
+    Store<E>(context, receiver, elements, indexB, tmp) otherwise Bailout;
+    Store<E>(context, receiver, elements, indexA, value) otherwise Bailout;
   }
 
   macro ArrayQuickSortImpl<E : type>(
@@ -355,7 +375,7 @@ module array {
     let initialReceiverMap: Object = sortState[kInitialReceiverMapIdx()];
     let initialReceiverLength: Number =
         unsafe_cast<Number>(sortState[kInitialReceiverLengthIdx()]);
-    let elements: Object = sortState[kElementsIdx()];
+    let elements: Object = sortState[kElementsOrReceiverIdx()];
 
     while (to - from > 1) {
       if (to - from <= 10) {
@@ -388,7 +408,8 @@ module array {
         otherwise Bailout;
 
         if (order < 0) {
-          Swap<E>(context, elements, low_end, idx, element) otherwise Bailout;
+          Swap<E>(context, receiver, elements, low_end, idx, element)
+          otherwise Bailout;
           low_end++;
         } else if (order > 0) {
           let break_for: bool = false;
@@ -397,7 +418,8 @@ module array {
           // smaller than pivot.
           while (order > 0) {
             assert(CanUseSameAccessor<E>(
-                context, receiver, elements, initialReceiverMap, initialReceiverLength));
+                context, receiver, elements, initialReceiverMap,
+                initialReceiverLength));
 
             high_start--;
             if (high_start == idx) {
@@ -417,47 +439,50 @@ module array {
             break;
           }
 
-          Swap<E>(context, elements, high_start, idx, element)
+          Swap<E>(context, receiver, elements, high_start, idx, element)
           otherwise Bailout;
 
           if (order < 0) {
             element = Load<E>(context, elements, idx) otherwise Bailout;
 
-            Swap<E>(context, elements, low_end, idx, element) otherwise Bailout;
+            Swap<E>(context, receiver, elements, low_end, idx, element)
+            otherwise Bailout;
             low_end++;
           }
         }
       }
 
       if ((to - high_start) < (low_end - from)) {
-        ArrayQuickSort<E>(context, sortState, high_start, to);
+        let bailed: Smi = ArrayQuickSort<E>(context, sortState, high_start, to);
+        if (bailed != kSuccess()) goto Bailout;
+
         to = low_end;
       } else {
-        ArrayQuickSort<E>(context, sortState, from, low_end);
+        let bailed: Smi = ArrayQuickSort<E>(context, sortState, from, low_end);
+        if (bailed != kSuccess()) goto Bailout;
+
         from = high_start;
       }
     }
   }
 
+  // Returns -1 iff we bailed to the slow path, 0 otherwise.
   builtin ArrayQuickSort<ElementsAccessor : type>(
-      context: Context, sortState: FixedArray, from: Smi, to: Smi): Object {
+      context: Context, sortState: FixedArray, from: Smi, to: Smi): Smi {
     try {
       ArrayQuickSortImpl<ElementsAccessor>(context, sortState, from, to)
       otherwise Slow;
     }
     label Slow {
-      // Generic version uses Set- and GetProperty, replace elements with
-      // the receiver itself.
-      sortState[kElementsIdx()] = sortState[kReceiverIdx()];
-      ArrayQuickSort<GenericElementsAccessor>(context, sortState, from, to);
+      return kFailure();
     }
-    return SmiConstant(0);
+    return kSuccess();
   }
 
   // The specialization is needed since we would end up in an endless loop
   // when the ElementsAccessor fails and bails to the ElementsAccessor again.
   ArrayQuickSort<GenericElementsAccessor>(
-      context: Context, sortState: FixedArray, from: Smi, to: Smi): Object {
+      context: Context, sortState: FixedArray, from: Smi, to: Smi): Smi {
     try {
       ArrayQuickSortImpl<GenericElementsAccessor>(context, sortState, from, to)
       otherwise Error;
@@ -466,7 +491,19 @@ module array {
       // The generic baseline path must not fail.
       unreachable;
     }
-    return SmiConstant(0);
+    return kSuccess();
+  }
+
+  macro TryFastArrayQuickSort<ElementsAccessor : type>(
+      context: Context, sortState: FixedArray, from: Smi, to: Smi) {
+    let bailed: Smi =
+        ArrayQuickSort<ElementsAccessor>(context, sortState, from, to);
+    if (bailed != 0) {
+      // Generic version uses Set- and GetProperty, replace elements with
+      // the receiver itself.
+      sortState[kElementsOrReceiverIdx()] = sortState[kReceiverIdx()];
+      ArrayQuickSort<GenericElementsAccessor>(context, sortState, from, to);
+    }
   }
 
   // For compatibility with JSC, we also sort elements inherited from
@@ -509,7 +546,7 @@ module array {
     // Initialize the remaining fields with Undefined.
     // Needed for heap verification.
     sort_state[kInitialReceiverLengthIdx()] = Undefined;
-    sort_state[kElementsIdx()] = Undefined;
+    sort_state[kElementsOrReceiverIdx()] = Undefined;
     sort_state[kRandomStateIdx()] = Undefined;
 
     try {
@@ -527,26 +564,25 @@ module array {
       assert(a.map == map);
 
       sort_state[kInitialReceiverLengthIdx()] = len;
-      sort_state[kElementsIdx()] = a.elements;
+      sort_state[kElementsOrReceiverIdx()] = a.elements;
       sort_state[kRandomStateIdx()] = nofNonUndefined;
 
       if (IsDoubleElementsKind(elementsKind)) {
-        ArrayQuickSort<FastDoubleElements>(
+        TryFastArrayQuickSort<FastDoubleElements>(
             context, sort_state, 0, nofNonUndefined);
       } else {
         if (elementsKind == PACKED_SMI_ELEMENTS) {
-          ArrayQuickSort<FastPackedSmiElements>(
+          TryFastArrayQuickSort<FastPackedSmiElements>(
               context, sort_state, 0, nofNonUndefined);
         } else {
-          ArrayQuickSort<FastSmiOrObjectElements>(
+          TryFastArrayQuickSort<FastSmiOrObjectElements>(
               context, sort_state, 0, nofNonUndefined);
         }
       }
     }
     label slow {
       // 3. Let len be ? ToLength(? Get(obj, "length")).
-      let len: Number =
-          ToLength_Inline(context, GetProperty(context, obj, 'length'));
+      let len: Number = GetLengthProperty(context, obj);
 
       if (len < 2) return receiver;
       let nofNonUndefined: Smi = PrepareElementsForSort(context, obj, len);
@@ -561,13 +597,13 @@ module array {
       if (map.elements_kind == DICTIONARY_ELEMENTS && IsExtensibleMap(map) &&
           !IsCustomElementsReceiverInstanceType(map.instance_type)) {
         let jsobj: JSObject = unsafe_cast<JSObject>(obj);
-        sort_state[kElementsIdx()] = jsobj.elements;
-        ArrayQuickSort<DictionaryElements>(
+        sort_state[kElementsOrReceiverIdx()] = jsobj.elements;
+        TryFastArrayQuickSort<DictionaryElements>(
             context, sort_state, 0, nofNonUndefined);
         return receiver;
       }
 
-      sort_state[kElementsIdx()] = obj;
+      sort_state[kElementsOrReceiverIdx()] = obj;
       ArrayQuickSort<GenericElementsAccessor>(
           context, sort_state, 0, nofNonUndefined);
     }

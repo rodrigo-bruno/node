@@ -254,12 +254,12 @@ class ThreadId {
   static ThreadId Invalid() { return ThreadId(kInvalidId); }
 
   // Compares ThreadIds for equality.
-  INLINE(bool Equals(const ThreadId& other) const) {
+  V8_INLINE bool Equals(const ThreadId& other) const {
     return base::Relaxed_Load(&id_) == base::Relaxed_Load(&other.id_);
   }
 
   // Checks whether this ThreadId refers to any thread.
-  INLINE(bool IsValid() const) {
+  V8_INLINE bool IsValid() const {
     return base::Relaxed_Load(&id_) != kInvalidId;
   }
 
@@ -525,7 +525,7 @@ class Isolate : private HiddenFactory {
   }
 
   // Returns the isolate inside which the current thread is running.
-  INLINE(static Isolate* Current()) {
+  V8_INLINE static Isolate* Current() {
     DCHECK_EQ(base::Relaxed_Load(&isolate_key_created_), 1);
     Isolate* isolate = reinterpret_cast<Isolate*>(
         base::Thread::GetExistingThreadLocal(isolate_key_));
@@ -721,10 +721,10 @@ class Isolate : private HiddenFactory {
   Handle<String> StackTraceString();
   // Stores a stack trace in a stack-allocated temporary buffer which will
   // end up in the minidump for debugging purposes.
-  NO_INLINE(void PushStackTraceAndDie(void* ptr1 = nullptr,
-                                      void* ptr2 = nullptr,
-                                      void* ptr3 = nullptr,
-                                      void* ptr4 = nullptr));
+  V8_NOINLINE void PushStackTraceAndDie(void* ptr1 = nullptr,
+                                        void* ptr2 = nullptr,
+                                        void* ptr3 = nullptr,
+                                        void* ptr4 = nullptr);
   Handle<FixedArray> CaptureCurrentStackTrace(
       int frame_limit, StackTrace::StackTraceOptions options);
   Handle<Object> CaptureSimpleStackTrace(Handle<JSReceiver> error_object,
@@ -1260,10 +1260,6 @@ class Isolate : private HiddenFactory {
     return reinterpret_cast<Address>(&handle_scope_implementer_);
   }
 
-  Address debug_execution_mode_address() {
-    return reinterpret_cast<Address>(&debug_execution_mode_);
-  }
-
   void SetAtomicsWaitCallback(v8::Isolate::AtomicsWaitCallback callback,
                               void* data);
   void RunAtomicsWaitCallback(v8::Isolate::AtomicsWaitEvent event,
@@ -1286,15 +1282,14 @@ class Isolate : private HiddenFactory {
   // Off-heap builtins cannot embed constants within the code object itself,
   // and thus need to load them from the root list.
   bool ShouldLoadConstantsFromRootList() const {
-#ifdef V8_EMBEDDED_BUILTINS
-    return (serializer_enabled() &&
-            builtins_constants_table_builder() != nullptr);
-#else
-    return false;
-#endif  // V8_EMBEDDED_BUILTINS
+    if (FLAG_embedded_builtins) {
+      return (serializer_enabled() &&
+              builtins_constants_table_builder() != nullptr);
+    } else {
+      return false;
+    }
   }
 
-#ifdef V8_EMBEDDED_BUILTINS
   // Called only prior to serialization.
   // This function copies off-heap-safe builtins off the heap, creates off-heap
   // trampolines, and sets up this isolate's embedded blob.
@@ -1307,10 +1302,10 @@ class Isolate : private HiddenFactory {
   static const uint8_t* CurrentEmbeddedBlob();
   static uint32_t CurrentEmbeddedBlobSize();
 
-  // TODO(jgruber): Remove these in favor of the static methods above.
+  // These always return the same result as static methods above, but don't
+  // access the global atomic variable (and thus *might be* slightly faster).
   const uint8_t* embedded_blob() const;
   uint32_t embedded_blob_size() const;
-#endif
 
   void set_array_buffer_allocator(v8::ArrayBuffer::Allocator* allocator) {
     array_buffer_allocator_ = allocator;
@@ -1663,7 +1658,6 @@ class Isolate : private HiddenFactory {
 
   std::vector<Object*> partial_snapshot_cache_;
 
-#ifdef V8_EMBEDDED_BUILTINS
   // Used during builtins compilation to build the builtins constants table,
   // which is stored on the root list prior to serialization.
   BuiltinsConstantsTableBuilder* builtins_constants_table_builder_ = nullptr;
@@ -1672,7 +1666,6 @@ class Isolate : private HiddenFactory {
 
   const uint8_t* embedded_blob_ = nullptr;
   uint32_t embedded_blob_size_ = 0;
-#endif
 
   v8::ArrayBuffer::Allocator* array_buffer_allocator_;
 

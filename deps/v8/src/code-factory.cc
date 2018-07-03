@@ -318,7 +318,12 @@ Callable CodeFactory::InterpreterCEntry(Isolate* isolate, int result_size) {
   // save fpregs too.
   Handle<Code> code = CodeFactory::CEntry(isolate, result_size, kDontSaveFPRegs,
                                           kArgvInRegister);
-  return Callable(code, InterpreterCEntryDescriptor{});
+  if (result_size == 1) {
+    return Callable(code, InterpreterCEntry1Descriptor{});
+  } else {
+    DCHECK_EQ(result_size, 2);
+    return Callable(code, InterpreterCEntry2Descriptor{});
+  }
 }
 
 // static
@@ -430,39 +435,6 @@ Callable CodeFactory::InternalArraySingleArgumentConstructor(
     default:
       UNREACHABLE();
   }
-}
-
-// static
-Callable CodeFactory::ArrayPop(Isolate* isolate) {
-  return Callable(BUILTIN_CODE(isolate, ArrayPop), JSTrampolineDescriptor{});
-}
-
-// static
-Callable CodeFactory::ArrayShift(Isolate* isolate) {
-  return Callable(BUILTIN_CODE(isolate, ArrayShift), JSTrampolineDescriptor{});
-}
-
-// static
-Callable CodeFactory::ExtractFastJSArray(Isolate* isolate) {
-  return Callable(BUILTIN_CODE(isolate, ExtractFastJSArray),
-                  ExtractFastJSArrayDescriptor{});
-}
-
-// static
-Callable CodeFactory::CloneFastJSArray(Isolate* isolate) {
-  return Callable(BUILTIN_CODE(isolate, CloneFastJSArray),
-                  CloneFastJSArrayDescriptor{});
-}
-
-// static
-Callable CodeFactory::ArrayPush(Isolate* isolate) {
-  return Callable(BUILTIN_CODE(isolate, ArrayPush), JSTrampolineDescriptor{});
-}
-
-// static
-Callable CodeFactory::FunctionPrototypeBind(Isolate* isolate) {
-  return Callable(BUILTIN_CODE(isolate, FunctionPrototypeBind),
-                  JSTrampolineDescriptor{});
 }
 
 }  // namespace internal

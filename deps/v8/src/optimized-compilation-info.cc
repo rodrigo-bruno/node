@@ -28,7 +28,7 @@ OptimizedCompilationInfo::OptimizedCompilationInfo(
   SetFlag(kCalledWithCodeStartRegister);
   if (FLAG_function_context_specialization) MarkAsFunctionContextSpecializing();
   if (FLAG_turbo_splitting) MarkAsSplittingEnabled();
-  if (!FLAG_untrusted_code_mitigations) SetFlag(kSwitchJumpTableEnabled);
+  SetFlag(kSwitchJumpTableEnabled);
   if (FLAG_untrusted_code_mitigations) MarkAsPoisoningRegisterArguments();
 
   // TODO(yangguo): Disable this in case of debugging for crbug.com/826613
@@ -62,12 +62,10 @@ OptimizedCompilationInfo::OptimizedCompilationInfo(
 #endif
   SetTracingFlags(
       PassesFilter(debug_name, CStrVector(FLAG_trace_turbo_filter)));
-  if (!FLAG_untrusted_code_mitigations) {
-    // Embedded builtins don't support embedded absolute code addresses, so we
-    // cannot use jump tables.
-    if (code_kind != Code::BUILTIN) {
-      SetFlag(kSwitchJumpTableEnabled);
-    }
+  // Embedded builtins don't support embedded absolute code addresses, so we
+  // cannot use jump tables.
+  if (code_kind != Code::BUILTIN) {
+    SetFlag(kSwitchJumpTableEnabled);
   }
 }
 
@@ -106,12 +104,12 @@ void OptimizedCompilationInfo::set_deferred_handles(
   deferred_handles_.reset(deferred_handles);
 }
 
-void OptimizedCompilationInfo::ReopenHandlesInNewHandleScope() {
+void OptimizedCompilationInfo::ReopenHandlesInNewHandleScope(Isolate* isolate) {
   if (!shared_info_.is_null()) {
-    shared_info_ = Handle<SharedFunctionInfo>(*shared_info_);
+    shared_info_ = Handle<SharedFunctionInfo>(*shared_info_, isolate);
   }
   if (!closure_.is_null()) {
-    closure_ = Handle<JSFunction>(*closure_);
+    closure_ = Handle<JSFunction>(*closure_, isolate);
   }
 }
 

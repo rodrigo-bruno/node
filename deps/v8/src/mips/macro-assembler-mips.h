@@ -133,12 +133,10 @@ inline MemOperand CFunctionArgumentOperand(int index) {
 
 class TurboAssembler : public TurboAssemblerBase {
  public:
-  TurboAssembler(Isolate* isolate, void* buffer, int buffer_size,
-                 CodeObjectRequired create_code_object)
-      : TurboAssemblerBase(isolate, buffer, buffer_size, create_code_object) {}
-
-  TurboAssembler(IsolateData isolate_data, void* buffer, int buffer_size)
-      : TurboAssemblerBase(isolate_data, buffer, buffer_size) {}
+  TurboAssembler(Isolate* isolate, const Options& options, void* buffer,
+                 int buffer_size, CodeObjectRequired create_code_object)
+      : TurboAssemblerBase(isolate, options, buffer, buffer_size,
+                           create_code_object) {}
 
   // Activation support.
   void EnterFrame(StackFrame::Type type);
@@ -156,6 +154,7 @@ class TurboAssembler : public TurboAssemblerBase {
     ExternalReference roots_array_start =
         ExternalReference::roots_array_start(isolate());
     li(kRootRegister, Operand(roots_array_start));
+    Addu(kRootRegister, kRootRegister, kRootRegisterBias);
   }
 
   // Jump unconditionally to given label.
@@ -249,14 +248,10 @@ class TurboAssembler : public TurboAssemblerBase {
   void li(Register dst, Handle<HeapObject> value, LiFlags mode = OPTIMIZE_SIZE);
   void li(Register dst, ExternalReference value, LiFlags mode = OPTIMIZE_SIZE);
 
-#ifdef V8_EMBEDDED_BUILTINS
   void LoadFromConstantsTable(Register destination,
                               int constant_index) override;
-  void LoadExternalReference(Register destination,
-                             int reference_index) override;
-  void LoadBuiltin(Register destination, int builtin_index) override;
   void LoadRootRegisterOffset(Register destination, intptr_t offset) override;
-#endif  // V8_EMBEDDED_BUILTINS
+  void LoadRootRelative(Register destination, int32_t offset) override;
 
 // Jump, Call, and Ret pseudo instructions implementing inter-working.
 #define COND_ARGS Condition cond = al, Register rs = zero_reg, \
@@ -281,7 +276,9 @@ class TurboAssembler : public TurboAssemblerBase {
             COND_ARGS);
   void Call(Label* target);
 
-  void CallForDeoptimization(Address target, RelocInfo::Mode rmode) {
+  void CallForDeoptimization(Address target, int deopt_id,
+                             RelocInfo::Mode rmode) {
+    USE(deopt_id);
     Call(target, rmode);
   }
 
@@ -924,7 +921,11 @@ class TurboAssembler : public TurboAssemblerBase {
 class MacroAssembler : public TurboAssembler {
  public:
   MacroAssembler(Isolate* isolate, void* buffer, int size,
-                 CodeObjectRequired create_code_object);
+                 CodeObjectRequired create_code_object)
+      : MacroAssembler(isolate, Assembler::DefaultOptions(isolate), buffer,
+                       size, create_code_object) {}
+  MacroAssembler(Isolate* isolate, const Options& options, void* buffer,
+                 int size, CodeObjectRequired create_code_object);
 
   // Swap two registers.  If the scratch register is omitted then a slightly
   // less efficient form using xor instead of mov is emitted.
@@ -1142,9 +1143,6 @@ const Operand& rt = Operand(zero_reg), BranchDelaySlot bd = PROTECT
   // Abort execution if argument is a smi, enabled via --debug-code.
   void AssertNotSmi(Register object);
   void AssertSmi(Register object);
-
-  // Abort execution if argument is not a FixedArray, enabled via --debug-code.
-  void AssertFixedArray(Register object);
 
   // Abort execution if argument is not a Constructor, enabled via --debug-code.
   void AssertConstructor(Register object);

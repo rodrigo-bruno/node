@@ -7,11 +7,8 @@
 
 #include <memory>
 
-#include "src/debug/debug-interface.h"
 #include "src/globals.h"
 #include "src/handles.h"
-#include "src/objects/managed.h"
-#include "src/parsing/preparse-data.h"
 #include "src/wasm/decoder.h"
 #include "src/wasm/signature-map.h"
 #include "src/wasm/wasm-constants.h"
@@ -20,22 +17,12 @@
 namespace v8 {
 namespace internal {
 
-class WasmCompiledModule;
 class WasmDebugInfo;
-class WasmGlobalObject;
-class WasmInstanceObject;
-class WasmMemoryObject;
 class WasmModuleObject;
-class WasmTableObject;
-
-namespace compiler {
-class CallDescriptor;
-}
 
 namespace wasm {
+
 class ErrorThrower;
-class NativeModule;
-class TestingModuleBuilder;
 
 // Static representation of a wasm function.
 struct WasmFunction {
@@ -152,7 +139,7 @@ struct V8_EXPORT_PRIVATE WasmModule {
   uint32_t globals_buffer_size = 0;
   uint32_t num_imported_mutable_globals = 0;
   uint32_t num_imported_functions = 0;
-  uint32_t num_declared_functions = 0;
+  uint32_t num_declared_functions = 0;  // excluding imported
   uint32_t num_exported_functions = 0;
   WireBytesRef name = {0, 0};
   std::vector<FunctionSig*> signatures;  // by signature index
@@ -167,16 +154,15 @@ struct V8_EXPORT_PRIVATE WasmModule {
   SignatureMap signature_map;  // canonicalizing map for signature indexes.
 
   ModuleOrigin origin = kWasmOrigin;  // origin of the module
-  mutable std::unique_ptr<std::unordered_map<uint32_t, WireBytesRef>> names_;
+  mutable std::unique_ptr<std::unordered_map<uint32_t, WireBytesRef>>
+      function_names;
 
   WasmModule() : WasmModule(nullptr) {}
   WasmModule(std::unique_ptr<Zone> owned);
 
-  WireBytesRef LookupName(const ModuleWireBytes* wire_bytes,
-                          uint32_t function_index) const;
-  WireBytesRef LookupName(SeqOneByteString* wire_bytes,
-                          uint32_t function_index) const;
-  void AddNameForTesting(int function_index, WireBytesRef name);
+  WireBytesRef LookupFunctionName(const ModuleWireBytes& wire_bytes,
+                                  uint32_t function_index) const;
+  void AddFunctionNameForTesting(int function_index, WireBytesRef name);
 };
 
 size_t EstimateWasmModuleSize(const WasmModule* module);

@@ -34,13 +34,6 @@ int GetContextId(Local<Context> context);
 void SetInspector(Isolate* isolate, v8_inspector::V8Inspector*);
 v8_inspector::V8Inspector* GetInspector(Isolate* isolate);
 
-/**
- * Enable/disable LiveEdit functionality for the given Isolate
- * (default Isolate if not provided). V8 will abort if LiveEdit is
- * unexpectedly used. LiveEdit is enabled by default.
- */
-V8_EXPORT_PRIVATE void SetLiveEditEnabled(Isolate* isolate, bool enable);
-
 // Schedule a debugger break to happen when function is called inside given
 // isolate.
 void SetBreakOnNextFunctionCall(Isolate* isolate);
@@ -86,6 +79,25 @@ void BreakRightNow(Isolate* isolate);
 
 bool AllFramesOnStackAreBlackboxed(Isolate* isolate);
 
+struct LiveEditResult {
+  enum Status {
+    OK,
+    COMPILE_ERROR,
+    BLOCKED_BY_RUNNING_GENERATOR,
+    BLOCKED_BY_FUNCTION_ABOVE_BREAK_FRAME,
+    BLOCKED_BY_FUNCTION_BELOW_NON_DROPPABLE_FRAME,
+    BLOCKED_BY_ACTIVE_FUNCTION,
+    BLOCKED_BY_NEW_TARGET_IN_RESTART_FRAME,
+    FRAME_RESTART_IS_NOT_SUPPORTED
+  };
+  Status status = OK;
+  bool stack_changed = false;
+  // Fields below are available only for COMPILE_ERROR.
+  v8::Local<v8::String> message;
+  int line_number = -1;
+  int column_number = -1;
+};
+
 /**
  * Native wrapper around v8::internal::Script object.
  */
@@ -114,7 +126,7 @@ class V8_EXPORT_PRIVATE Script {
   int GetSourceOffset(const debug::Location& location) const;
   v8::debug::Location GetSourceLocation(int offset) const;
   bool SetScriptSource(v8::Local<v8::String> newSource, bool preview,
-                       bool* stack_changed) const;
+                       LiveEditResult* result) const;
   bool SetBreakpoint(v8::Local<v8::String> condition, debug::Location* location,
                      BreakpointId* id) const;
 };

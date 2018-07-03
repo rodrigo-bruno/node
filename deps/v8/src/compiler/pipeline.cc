@@ -1048,10 +1048,11 @@ PipelineWasmCompilationJob::Status PipelineWasmCompilationJob::FinalizeJobImpl(
   code_generator->tasm()->GetCode(isolate, &code_desc);
 
   wasm::WasmCode* code = native_module_->AddCode(
-      code_desc, code_generator->frame()->GetTotalFrameSlotCount(),
-      data_.wasm_function_index(), code_generator->GetSafepointTableOffset(),
+      data_.wasm_function_index(), code_desc,
+      code_generator->frame()->GetTotalFrameSlotCount(),
+      code_generator->GetSafepointTableOffset(),
       code_generator->GetHandlerTableOffset(),
-      data_.wasm_compilation_data()->ReleaseProtectedInstructions(),
+      data_.wasm_compilation_data()->GetProtectedInstructions(),
       code_generator->GetSourcePositionTable(), wasm::WasmCode::kTurbofan);
 
   if (!code) return FAILED;
@@ -1646,8 +1647,8 @@ struct InstructionSelectionPhase {
             ? InstructionSelector::kEnableScheduling
             : InstructionSelector::kDisableScheduling,
         data->isolate()->serializer_enabled()
-            ? InstructionSelector::kEnableSerialization
-            : InstructionSelector::kDisableSerialization,
+            ? InstructionSelector::kDisableRootsRelativeAddressing
+            : InstructionSelector::kEnableRootsRelativeAddressing,
         data->info()->GetPoisoningMitigationLevel(),
         data->info()->trace_turbo_json_enabled()
             ? InstructionSelector::kEnableTraceTurboJson

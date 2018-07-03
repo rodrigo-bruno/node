@@ -109,7 +109,8 @@ class TransitionsAccessor {
 
 #if DEBUG || OBJECT_PRINT
   void PrintTransitions(std::ostream& os);
-  static void PrintOneTransition(std::ostream& os, Name* key, Map* target);
+  static void PrintOneTransition(Isolate* isolate, std::ostream& os, Name* key,
+                                 Map* target);
   void PrintTransitionTree();
   void PrintTransitionTree(std::ostream& os, int level,
                            DisallowHeapAllocation* no_gc);
@@ -118,7 +119,7 @@ class TransitionsAccessor {
   void CheckNewTransitionsAreConsistent(TransitionArray* old_transitions,
                                         Object* transitions);
   bool IsConsistentWithBackPointers();
-  bool IsSortedNoDuplicates();
+  bool IsSortedNoDuplicates(Isolate* isolate);
 #endif
 
  protected:
@@ -231,18 +232,14 @@ class TransitionArray : public WeakFixedArray {
   int GetSortedKeyIndex(int transition_number) { return transition_number; }
   inline int number_of_entries() const { return number_of_transitions(); }
 #ifdef DEBUG
-  bool IsSortedNoDuplicates(int valid_entries = -1);
+  bool IsSortedNoDuplicates(Isolate* isolate, int valid_entries = -1);
 #endif
 
   void Sort(Isolate* isolate);
 
-#if defined(DEBUG) || defined(OBJECT_PRINT)
-  // For our gdb macros.
-  void Print();
-  void Print(std::ostream& os);
-#endif
+  void PrintInternal(Isolate* isolate, std::ostream& os);
 
-  DECL_PRINTER(TransitionArray)
+  DECL_PRINTER_WITH_ISOLATE(TransitionArray)
   DECL_VERIFIER(TransitionArray)
 
   // Layout for full transition arrays.

@@ -93,15 +93,16 @@ class OrderedHashTable : public OrderedHashTableBase {
 
   // Returns an OrderedHashTable (possibly |table|) with enough space
   // to add at least one new element.
-  static Handle<Derived> EnsureGrowable(Handle<Derived> table);
+  static Handle<Derived> EnsureGrowable(Isolate* isolate,
+                                        Handle<Derived> table);
 
   // Returns an OrderedHashTable (possibly |table|) that's shrunken
   // if possible.
-  static Handle<Derived> Shrink(Handle<Derived> table);
+  static Handle<Derived> Shrink(Isolate* isolate, Handle<Derived> table);
 
   // Returns a new empty OrderedHashTable and records the clearing so that
   // existing iterators can be updated.
-  static Handle<Derived> Clear(Handle<Derived> table);
+  static Handle<Derived> Clear(Isolate* isolate, Handle<Derived> table);
 
   // Returns true if the OrderedHashTable contains the key
   static bool HasKey(Isolate* isolate, Derived* table, Object* key);
@@ -194,7 +195,8 @@ class OrderedHashTable : public OrderedHashTableBase {
       (1 + (kEntrySize * kLoadFactor));
 
  protected:
-  static Handle<Derived> Rehash(Handle<Derived> table, int new_capacity);
+  static Handle<Derived> Rehash(Isolate* isolate, Handle<Derived> table,
+                                int new_capacity);
 
   void SetNumberOfBuckets(int num) {
     set(kNumberOfBucketsIndex, Smi::FromInt(num));
@@ -222,9 +224,11 @@ class OrderedHashSet : public OrderedHashTable<OrderedHashSet, 1> {
  public:
   DECL_CAST(OrderedHashSet)
 
-  static Handle<OrderedHashSet> Add(Handle<OrderedHashSet> table,
+  static Handle<OrderedHashSet> Add(Isolate* isolate,
+                                    Handle<OrderedHashSet> table,
                                     Handle<Object> value);
-  static Handle<FixedArray> ConvertToKeysArray(Handle<OrderedHashSet> table,
+  static Handle<FixedArray> ConvertToKeysArray(Isolate* isolate,
+                                               Handle<OrderedHashSet> table,
                                                GetKeysConversion convert);
   static HeapObject* GetEmpty(Isolate* isolate);
   static inline int GetMapRootIndex();
@@ -237,7 +241,8 @@ class OrderedHashMap : public OrderedHashTable<OrderedHashMap, 2> {
 
   // Returns a value if the OrderedHashMap contains the key, otherwise
   // returns undefined.
-  static Handle<OrderedHashMap> Add(Handle<OrderedHashMap> table,
+  static Handle<OrderedHashMap> Add(Isolate* isolate,
+                                    Handle<OrderedHashMap> table,
                                     Handle<Object> key, Handle<Object> value);
   Object* ValueAt(int entry);
 
@@ -313,9 +318,10 @@ class SmallOrderedHashTable : public HeapObject {
   // Returns an SmallOrderedHashTable (possibly |table|) with enough
   // space to add at least one new element. Returns empty handle if
   // we've already reached MaxCapacity.
-  static MaybeHandle<Derived> Grow(Handle<Derived> table);
+  static MaybeHandle<Derived> Grow(Isolate* isolate, Handle<Derived> table);
 
-  static Handle<Derived> Rehash(Handle<Derived> table, int new_capacity);
+  static Handle<Derived> Rehash(Isolate* isolate, Handle<Derived> table,
+                                int new_capacity);
 
   // Iterates only fields in the DataTable.
   class BodyDescriptor;
@@ -332,10 +338,10 @@ class SmallOrderedHashTable : public HeapObject {
     int data_table_size = DataTableSizeFor(capacity);
     int hash_table_size = capacity / kLoadFactor;
     int chain_table_size = capacity;
-    int total_size = kHeaderSize + kDataTableStartOffset + data_table_size +
-                     hash_table_size + chain_table_size;
+    int total_size = kDataTableStartOffset + data_table_size + hash_table_size +
+                     chain_table_size;
 
-    return ((total_size + kPointerSize - 1) / kPointerSize) * kPointerSize;
+    return RoundUp(total_size, kPointerSize);
   }
 
   // Returns the number elements that can fit into the allocated table.
@@ -349,20 +355,20 @@ class SmallOrderedHashTable : public HeapObject {
 
   // Returns the number elements that are present in the table.
   int NumberOfElements() const {
-    int nof_elements = getByte(0, kNumberOfElementsByteIndex);
+    int nof_elements = getByte(kNumberOfElementsOffset, 0);
     DCHECK_LE(nof_elements, Capacity());
 
     return nof_elements;
   }
 
   int NumberOfDeletedElements() const {
-    int nof_deleted_elements = getByte(0, kNumberOfDeletedElementsByteIndex);
+    int nof_deleted_elements = getByte(kNumberOfDeletedElementsOffset, 0);
     DCHECK_LE(nof_deleted_elements, Capacity());
 
     return nof_deleted_elements;
   }
 
-  int NumberOfBuckets() const { return getByte(0, kNumberOfBucketsByteIndex); }
+  int NumberOfBuckets() const { return getByte(kNumberOfBucketsOffset, 0); }
 
   DECL_VERIFIER(SmallOrderedHashTable)
 
@@ -401,8 +407,7 @@ class SmallOrderedHashTable : public HeapObject {
   }
 
   Address GetHashTableStartAddress(int capacity) const {
-    return FIELD_ADDR(
-        this, kHeaderSize + kDataTableStartOffset + DataTableSizeFor(capacity));
+    return FIELD_ADDR(this, kDataTableStartOffset + DataTableSizeFor(capacity));
   }
 
   void SetFirstEntry(int bucket, byte value) {
@@ -443,13 +448,13 @@ class SmallOrderedHashTable : public HeapObject {
     DCHECK_LT(entry, Capacity());
     DCHECK_LE(static_cast<unsigned>(relative_index), Derived::kEntrySize);
     Offset entry_offset = GetDataEntryOffset(entry, relative_index);
-    return READ_FIELD(this, kHeaderSize + entry_offset);
+    return READ_FIELD(this, entry_offset);
   }
 
   Object* KeyAt(int entry) const {
     DCHECK_LT(entry, Capacity());
     Offset entry_offset = GetDataEntryOffset(entry, Derived::kKeyIndex);
-    return READ_FIELD(this, kHeaderSize + entry_offset);
+    return READ_FIELD(this, entry_offset);
   }
 
   int HashToBucket(int hash) const { return hash & (NumberOfBuckets() - 1); }
@@ -461,18 +466,16 @@ class SmallOrderedHashTable : public HeapObject {
     return entry;
   }
 
-  void SetNumberOfBuckets(int num) {
-    setByte(0, kNumberOfBucketsByteIndex, num);
-  }
+  void SetNumberOfBuckets(int num) { setByte(kNumberOfBucketsOffset, 0, num); }
 
   void SetNumberOfElements(int num) {
     DCHECK_LE(static_cast<unsigned>(num), Capacity());
-    setByte(0, kNumberOfElementsByteIndex, num);
+    setByte(kNumberOfElementsOffset, 0, num);
   }
 
   void SetNumberOfDeletedElements(int num) {
     DCHECK_LE(static_cast<unsigned>(num), Capacity());
-    setByte(0, kNumberOfDeletedElementsByteIndex, num);
+    setByte(kNumberOfDeletedElementsOffset, 0, num);
   }
 
   int FindEntry(Isolate* isolate, Object* key) {
@@ -491,11 +494,14 @@ class SmallOrderedHashTable : public HeapObject {
     return kNotFound;
   }
 
-  static const int kNumberOfElementsByteIndex = 0;
-  static const int kNumberOfDeletedElementsByteIndex = 1;
-  static const int kNumberOfBucketsByteIndex = 2;
+  static const Offset kNumberOfElementsOffset = kHeaderSize;
+  static const Offset kNumberOfDeletedElementsOffset =
+      kNumberOfElementsOffset + kOneByteSize;
+  static const Offset kNumberOfBucketsOffset =
+      kNumberOfDeletedElementsOffset + kOneByteSize;
+  static const constexpr Offset kDataTableStartOffset =
+      RoundUp<kPointerSize>(kNumberOfBucketsOffset);
 
-  static const Offset kDataTableStartOffset = kPointerSize;
   static constexpr int DataTableSizeFor(int capacity) {
     return capacity * Derived::kEntrySize * kPointerSize;
   }
@@ -504,13 +510,12 @@ class SmallOrderedHashTable : public HeapObject {
   // structure.
   byte getByte(Offset offset, ByteIndex index) const {
     DCHECK(offset < kDataTableStartOffset || offset >= GetBucketsStartOffset());
-    return READ_BYTE_FIELD(this, kHeaderSize + offset + (index * kOneByteSize));
+    return READ_BYTE_FIELD(this, offset + (index * kOneByteSize));
   }
 
   void setByte(Offset offset, ByteIndex index, byte value) {
     DCHECK(offset < kDataTableStartOffset || offset >= GetBucketsStartOffset());
-    WRITE_BYTE_FIELD(this, kHeaderSize + offset + (index * kOneByteSize),
-                     value);
+    WRITE_BYTE_FIELD(this, offset + (index * kOneByteSize), value);
   }
 
   Offset GetDataEntryOffset(int entry, int relative_index) const {
@@ -530,6 +535,7 @@ class SmallOrderedHashTable : public HeapObject {
  private:
   friend class OrderedHashMapHandler;
   friend class OrderedHashSetHandler;
+  friend class CodeStubAssembler;
 };
 
 class SmallOrderedHashSet : public SmallOrderedHashTable<SmallOrderedHashSet> {
@@ -544,9 +550,11 @@ class SmallOrderedHashSet : public SmallOrderedHashTable<SmallOrderedHashSet> {
   // Adds |value| to |table|, if the capacity isn't enough, a new
   // table is created. The original |table| is returned if there is
   // capacity to store |value| otherwise the new table is returned.
-  static MaybeHandle<SmallOrderedHashSet> Add(Handle<SmallOrderedHashSet> table,
+  static MaybeHandle<SmallOrderedHashSet> Add(Isolate* isolate,
+                                              Handle<SmallOrderedHashSet> table,
                                               Handle<Object> key);
   static inline bool Is(Handle<HeapObject> table);
+  static inline int GetMapRootIndex();
 };
 
 class SmallOrderedHashMap : public SmallOrderedHashTable<SmallOrderedHashMap> {
@@ -562,10 +570,12 @@ class SmallOrderedHashMap : public SmallOrderedHashTable<SmallOrderedHashMap> {
   // Adds |value| to |table|, if the capacity isn't enough, a new
   // table is created. The original |table| is returned if there is
   // capacity to store |value| otherwise the new table is returned.
-  static MaybeHandle<SmallOrderedHashMap> Add(Handle<SmallOrderedHashMap> table,
+  static MaybeHandle<SmallOrderedHashMap> Add(Isolate* isolate,
+                                              Handle<SmallOrderedHashMap> table,
                                               Handle<Object> key,
                                               Handle<Object> value);
   static inline bool Is(Handle<HeapObject> table);
+  static inline int GetMapRootIndex();
 };
 
 // TODO(gsathya): Rename this to OrderedHashTable, after we rename

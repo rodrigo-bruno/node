@@ -631,6 +631,11 @@ MemoryChunk* MemoryChunk::Initialize(Heap* heap, Address base, size_t size,
   chunk->young_generation_bitmap_ = nullptr;
   chunk->local_tracker_ = nullptr;
 
+  chunk->external_backing_store_bytes_[ExternalBackingStoreType::kArrayBuffer] =
+      0;
+  chunk->external_backing_store_bytes_
+      [ExternalBackingStoreType::kExternalString] = 0;
+
   for (int i = kFirstCategory; i < kNumberOfCategories; i++) {
     chunk->categories_[i] = nullptr;
   }
@@ -849,8 +854,8 @@ MemoryChunk* MemoryAllocator::AllocateChunk(size_t reserve_area_size,
     }
 
     if (Heap::ShouldZapGarbage()) {
-      ZapBlock(base, CodePageGuardStartOffset());
-      ZapBlock(base + CodePageAreaStartOffset(), commit_area_size);
+      ZapBlock(base, CodePageGuardStartOffset(), kZapValue);
+      ZapBlock(base + CodePageAreaStartOffset(), commit_area_size, kZapValue);
     }
 
     area_start = base + CodePageAreaStartOffset();
@@ -868,7 +873,7 @@ MemoryChunk* MemoryAllocator::AllocateChunk(size_t reserve_area_size,
     if (base == kNullAddress) return nullptr;
 
     if (Heap::ShouldZapGarbage()) {
-      ZapBlock(base, Page::kObjectStartOffset + commit_area_size);
+      ZapBlock(base, Page::kObjectStartOffset + commit_area_size, kZapValue);
     }
 
     area_start = base + Page::kObjectStartOffset;
@@ -908,6 +913,15 @@ MemoryChunk* MemoryAllocator::AllocateChunk(size_t reserve_area_size,
 }
 
 void Page::ResetAllocatedBytes() { allocated_bytes_ = area_size(); }
+
+void Page::AllocateLocalTracker() {
+  DCHECK_NULL(local_tracker_);
+  local_tracker_ = new LocalArrayBufferTracker(this);
+}
+
+bool Page::contains_array_buffers() {
+  return local_tracker_ != nullptr && !local_tracker_->IsEmpty();
+}
 
 void Page::ResetFreeListStatistics() {
   wasted_memory_ = 0;
@@ -1159,7 +1173,7 @@ bool MemoryAllocator::CommitBlock(Address start, size_t size) {
   if (!CommitMemory(start, size)) return false;
 
   if (Heap::ShouldZapGarbage()) {
-    ZapBlock(start, size);
+    ZapBlock(start, size, kZapValue);
   }
 
   isolate_->counters()->memory_allocated()->Increment(static_cast<int>(size));
@@ -1173,10 +1187,12 @@ bool MemoryAllocator::UncommitBlock(Address start, size_t size) {
   return true;
 }
 
-
-void MemoryAllocator::ZapBlock(Address start, size_t size) {
+void MemoryAllocator::ZapBlock(Address start, size_t size,
+                               uintptr_t zap_value) {
+  DCHECK_EQ(start % kPointerSize, 0);
+  DCHECK_EQ(size % kPointerSize, 0);
   for (size_t s = 0; s + kPointerSize <= size; s += kPointerSize) {
-    Memory::Address_at(start + s) = static_cast<Address>(kZapValue);
+    Memory::Address_at(start + s) = static_cast<Address>(zap_value);
   }
 }
 
@@ -1250,10 +1266,6 @@ bool MemoryAllocator::CommitExecutableMemory(VirtualMemory* vm, Address start,
 
 // -----------------------------------------------------------------------------
 // MemoryChunk implementation
-
-bool MemoryChunk::contains_array_buffers() {
-  return local_tracker() != nullptr && !local_tracker()->IsEmpty();
-}
 
 void MemoryChunk::ReleaseAllocatedMemory() {
   if (skip_list_ != nullptr) {
@@ -1372,11 +1384,6 @@ void MemoryChunk::RegisterObjectWithInvalidatedSlots(HeapObject* object,
   }
 }
 
-void MemoryChunk::AllocateLocalTracker() {
-  DCHECK_NULL(local_tracker_);
-  local_tracker_ = new LocalArrayBufferTracker(owner());
-}
-
 void MemoryChunk::ReleaseLocalTracker() {
   DCHECK_NOT_NULL(local_tracker_);
   delete local_tracker_;
@@ -1392,6 +1399,19 @@ void MemoryChunk::ReleaseYoungGenerationBitmap() {
   DCHECK_NOT_NULL(young_generation_bitmap_);
   free(young_generation_bitmap_);
   young_generation_bitmap_ = nullptr;
+}
+
+void MemoryChunk::IncrementExternalBackingStoreBytes(
+    ExternalBackingStoreType type, size_t amount) {
+  external_backing_store_bytes_[type] += amount;
+  owner()->IncrementExternalBackingStoreBytes(type, amount);
+}
+
+void MemoryChunk::DecrementExternalBackingStoreBytes(
+    ExternalBackingStoreType type, size_t amount) {
+  DCHECK_GE(external_backing_store_bytes_[type], amount);
+  external_backing_store_bytes_[type] -= amount;
+  owner()->DecrementExternalBackingStoreBytes(type, amount);
 }
 
 // -----------------------------------------------------------------------------
@@ -1497,7 +1517,6 @@ void PagedSpace::MergeCompactionSpace(CompactionSpace* other) {
   DCHECK(identity() == other->identity());
   // Unmerged fields:
   //   area_size_
-
   other->FreeLinearAllocationArea();
 
   // The linear allocation area of {other} should be destroyed now.
@@ -1584,6 +1603,10 @@ size_t PagedSpace::AddPage(Page* page) {
   AccountCommitted(page->size());
   IncreaseCapacity(page->area_size());
   IncreaseAllocatedBytes(page->allocated_bytes(), page);
+  for (size_t i = 0; i < ExternalBackingStoreType::kNumTypes; i++) {
+    ExternalBackingStoreType t = static_cast<ExternalBackingStoreType>(i);
+    IncrementExternalBackingStoreBytes(t, page->ExternalBackingStoreBytes(t));
+  }
   return RelinkFreeListCategories(page);
 }
 
@@ -1594,6 +1617,10 @@ void PagedSpace::RemovePage(Page* page) {
   DecreaseAllocatedBytes(page->allocated_bytes(), page);
   DecreaseCapacity(page->area_size());
   AccountUncommitted(page->size());
+  for (size_t i = 0; i < ExternalBackingStoreType::kNumTypes; i++) {
+    ExternalBackingStoreType t = static_cast<ExternalBackingStoreType>(i);
+    DecrementExternalBackingStoreBytes(t, page->ExternalBackingStoreBytes(t));
+  }
 }
 
 size_t PagedSpace::ShrinkPageToHighWaterMark(Page* page) {
@@ -1869,11 +1896,23 @@ void PagedSpace::Print() {}
 #endif
 
 #ifdef VERIFY_HEAP
-void PagedSpace::Verify(ObjectVisitor* visitor) {
+void PagedSpace::Verify(Isolate* isolate, ObjectVisitor* visitor) {
   bool allocation_pointer_found_in_space =
       (allocation_info_.top() == allocation_info_.limit());
+  size_t external_space_bytes[kNumTypes];
+  size_t external_page_bytes[kNumTypes];
+
+  for (int i = 0; i < kNumTypes; i++) {
+    external_space_bytes[static_cast<ExternalBackingStoreType>(i)] = 0;
+  }
+
   for (Page* page : *this) {
     CHECK(page->owner() == this);
+
+    for (int i = 0; i < kNumTypes; i++) {
+      external_page_bytes[static_cast<ExternalBackingStoreType>(i)] = 0;
+    }
+
     if (page == Page::FromAllocationAreaAddress(allocation_info_.top())) {
       allocation_pointer_found_in_space = true;
     }
@@ -1881,6 +1920,7 @@ void PagedSpace::Verify(ObjectVisitor* visitor) {
     HeapObjectIterator it(page);
     Address end_of_previous_object = page->area_start();
     Address top = page->area_end();
+
     for (HeapObject* object = it.Next(); object != nullptr;
          object = it.Next()) {
       CHECK(end_of_previous_object <= object->address());
@@ -1896,7 +1936,7 @@ void PagedSpace::Verify(ObjectVisitor* visitor) {
       VerifyObject(object);
 
       // The object itself should look OK.
-      object->ObjectVerify();
+      object->ObjectVerify(isolate);
 
       if (!FLAG_verify_heap_skip_remembered_set) {
         heap()->VerifyRememberedSetFor(object);
@@ -1907,7 +1947,24 @@ void PagedSpace::Verify(ObjectVisitor* visitor) {
       object->IterateBody(map, size, visitor);
       CHECK(object->address() + size <= top);
       end_of_previous_object = object->address() + size;
+
+      if (object->IsJSArrayBuffer()) {
+        JSArrayBuffer* array_buffer = JSArrayBuffer::cast(object);
+        if (ArrayBufferTracker::IsTracked(array_buffer)) {
+          size_t size = NumberToSize(array_buffer->byte_length());
+          external_page_bytes[ExternalBackingStoreType::kArrayBuffer] += size;
+        }
+      }
     }
+    for (int i = 0; i < kNumTypes; i++) {
+      ExternalBackingStoreType t = static_cast<ExternalBackingStoreType>(i);
+      CHECK_EQ(external_page_bytes[t], page->ExternalBackingStoreBytes(t));
+      external_space_bytes[t] += external_page_bytes[t];
+    }
+  }
+  for (int i = 0; i < kNumTypes; i++) {
+    ExternalBackingStoreType t = static_cast<ExternalBackingStoreType>(i);
+    CHECK_EQ(external_space_bytes[t], ExternalBackingStoreBytes(t));
   }
   CHECK(allocation_pointer_found_in_space);
 #ifdef DEBUG
@@ -2334,7 +2391,7 @@ std::unique_ptr<ObjectIterator> NewSpace::GetObjectIterator() {
 #ifdef VERIFY_HEAP
 // We do not use the SemiSpaceIterator because verification doesn't assume
 // that it works (it depends on the invariants we are checking).
-void NewSpace::Verify() {
+void NewSpace::Verify(Isolate* isolate) {
   // The allocation pointer should be in the space or at the very end.
   DCHECK_SEMISPACE_ALLOCATION_INFO(allocation_info_, to_space_);
 
@@ -2342,6 +2399,11 @@ void NewSpace::Verify() {
   // allocation pointer.
   Address current = to_space_.first_page()->area_start();
   CHECK_EQ(current, to_space_.space_start());
+
+  size_t external_space_bytes[kNumTypes];
+  for (int i = 0; i < kNumTypes; i++) {
+    external_space_bytes[static_cast<ExternalBackingStoreType>(i)] = 0;
+  }
 
   while (current != top()) {
     if (!Page::IsAlignedToPageSize(current)) {
@@ -2363,12 +2425,20 @@ void NewSpace::Verify() {
       CHECK(!object->IsAbstractCode());
 
       // The object itself should look OK.
-      object->ObjectVerify();
+      object->ObjectVerify(isolate);
 
       // All the interior pointers should be contained in the heap.
       VerifyPointersVisitor visitor(heap());
       int size = object->Size();
       object->IterateBody(map, size, &visitor);
+
+      if (object->IsJSArrayBuffer()) {
+        JSArrayBuffer* array_buffer = JSArrayBuffer::cast(object);
+        if (ArrayBufferTracker::IsTracked(array_buffer)) {
+          size_t size = NumberToSize(array_buffer->byte_length());
+          external_space_bytes[ExternalBackingStoreType::kArrayBuffer] += size;
+        }
+      }
 
       current += size;
     } else {
@@ -2376,6 +2446,11 @@ void NewSpace::Verify() {
       Page* page = Page::FromAllocationAreaAddress(current)->next_page();
       current = page->area_start();
     }
+  }
+
+  for (int i = 0; i < kNumTypes; i++) {
+    ExternalBackingStoreType t = static_cast<ExternalBackingStoreType>(i);
+    CHECK_EQ(external_space_bytes[t], ExternalBackingStoreBytes(t));
   }
 
   // Check semi-spaces.
@@ -2546,6 +2621,10 @@ void SemiSpace::RemovePage(Page* page) {
     }
   }
   memory_chunk_list_.Remove(page);
+  for (size_t i = 0; i < ExternalBackingStoreType::kNumTypes; i++) {
+    ExternalBackingStoreType t = static_cast<ExternalBackingStoreType>(i);
+    DecrementExternalBackingStoreBytes(t, page->ExternalBackingStoreBytes(t));
+  }
 }
 
 void SemiSpace::PrependPage(Page* page) {
@@ -2554,6 +2633,10 @@ void SemiSpace::PrependPage(Page* page) {
   page->set_owner(this);
   memory_chunk_list_.PushFront(page);
   pages_used_++;
+  for (size_t i = 0; i < ExternalBackingStoreType::kNumTypes; i++) {
+    ExternalBackingStoreType t = static_cast<ExternalBackingStoreType>(i);
+    IncrementExternalBackingStoreBytes(t, page->ExternalBackingStoreBytes(t));
+  }
 }
 
 void SemiSpace::Swap(SemiSpace* from, SemiSpace* to) {
@@ -2571,6 +2654,8 @@ void SemiSpace::Swap(SemiSpace* from, SemiSpace* to) {
   std::swap(from->committed_, to->committed_);
   std::swap(from->memory_chunk_list_, to->memory_chunk_list_);
   std::swap(from->current_page_, to->current_page_);
+  std::swap(from->external_backing_store_bytes_,
+            to->external_backing_store_bytes_);
 
   to->FixPagesFlags(saved_to_space_flags, Page::kCopyOnFlipFlagsMask);
   from->FixPagesFlags(0, 0);
@@ -2597,6 +2682,12 @@ void SemiSpace::Print() {}
 #ifdef VERIFY_HEAP
 void SemiSpace::Verify() {
   bool is_from_space = (id_ == kFromSpace);
+  size_t external_backing_store_bytes[kNumTypes];
+
+  for (int i = 0; i < kNumTypes; i++) {
+    external_backing_store_bytes[static_cast<ExternalBackingStoreType>(i)] = 0;
+  }
+
   for (Page* page : *this) {
     CHECK_EQ(page->owner(), this);
     CHECK(page->InNewSpace());
@@ -2615,8 +2706,17 @@ void SemiSpace::Verify() {
             !page->IsFlagSet(MemoryChunk::POINTERS_FROM_HERE_ARE_INTERESTING));
       }
     }
+    for (int i = 0; i < kNumTypes; i++) {
+      ExternalBackingStoreType t = static_cast<ExternalBackingStoreType>(i);
+      external_backing_store_bytes[t] += page->ExternalBackingStoreBytes(t);
+    }
+
     CHECK_IMPLIES(page->list_node().prev(),
                   page->list_node().prev()->list_node().next() == page);
+  }
+  for (int i = 0; i < kNumTypes; i++) {
+    ExternalBackingStoreType t = static_cast<ExternalBackingStoreType>(i);
+    CHECK_EQ(external_backing_store_bytes[t], ExternalBackingStoreBytes(t));
   }
 }
 #endif
@@ -2950,7 +3050,7 @@ size_t FreeListCategory::SumFreeList() {
   size_t sum = 0;
   FreeSpace* cur = top();
   while (cur != nullptr) {
-    DCHECK(cur->map() == cur->GetHeap()->root(Heap::kFreeSpaceMapRootIndex));
+    DCHECK(cur->map() == page()->heap()->root(Heap::kFreeSpaceMapRootIndex));
     sum += cur->relaxed_read_size();
     cur = cur->next();
   }
@@ -3240,7 +3340,10 @@ HeapObject* LargeObjectIterator::Next() {
 // LargeObjectSpace
 
 LargeObjectSpace::LargeObjectSpace(Heap* heap)
-    : Space(heap, LO_SPACE),  // Managed on a per-allocation basis
+    : LargeObjectSpace(heap, LO_SPACE) {}
+
+LargeObjectSpace::LargeObjectSpace(Heap* heap, AllocationSpace id)
+    : Space(heap, id),
       size_(0),
       page_count_(0),
       objects_size_(0),
@@ -3442,7 +3545,13 @@ std::unique_ptr<ObjectIterator> LargeObjectSpace::GetObjectIterator() {
 #ifdef VERIFY_HEAP
 // We do not assume that the large object iterator works, because it depends
 // on the invariants we are checking during verification.
-void LargeObjectSpace::Verify() {
+void LargeObjectSpace::Verify(Isolate* isolate) {
+  size_t external_backing_store_bytes[kNumTypes];
+
+  for (int i = 0; i < kNumTypes; i++) {
+    external_backing_store_bytes[static_cast<ExternalBackingStoreType>(i)] = 0;
+  }
+
   for (LargePage* chunk = first_page(); chunk != nullptr;
        chunk = chunk->next_page()) {
     // Each chunk contains an object that starts at the large object page's
@@ -3468,7 +3577,7 @@ void LargeObjectSpace::Verify() {
           object->IsFreeSpace());
 
     // The object itself should look OK.
-    object->ObjectVerify();
+    object->ObjectVerify(isolate);
 
     if (!FLAG_verify_heap_skip_remembered_set) {
       heap()->VerifyRememberedSetFor(object);
@@ -3499,6 +3608,14 @@ void LargeObjectSpace::Verify() {
         }
       }
     }
+    for (int i = 0; i < kNumTypes; i++) {
+      ExternalBackingStoreType t = static_cast<ExternalBackingStoreType>(i);
+      external_backing_store_bytes[t] += chunk->ExternalBackingStoreBytes(t);
+    }
+  }
+  for (int i = 0; i < kNumTypes; i++) {
+    ExternalBackingStoreType t = static_cast<ExternalBackingStoreType>(i);
+    CHECK_EQ(external_backing_store_bytes[t], ExternalBackingStoreBytes(t));
   }
 }
 #endif
@@ -3507,15 +3624,16 @@ void LargeObjectSpace::Verify() {
 void LargeObjectSpace::Print() {
   StdoutStream os;
   LargeObjectIterator it(this);
+  Isolate* isolate = heap()->isolate();
   for (HeapObject* obj = it.Next(); obj != nullptr; obj = it.Next()) {
-    obj->Print(os);
+    obj->Print(isolate, os);
   }
 }
 
 void Page::Print() {
   // Make a best-effort to print the objects in the page.
   PrintF("Page@%p in %s\n", reinterpret_cast<void*>(this->address()),
-         AllocationSpaceName(this->owner()->identity()));
+         this->owner()->name());
   printf(" --------------------------------------\n");
   HeapObjectIterator objects(this);
   unsigned mark_size = 0;
@@ -3536,5 +3654,13 @@ void Page::Print() {
 }
 
 #endif  // DEBUG
+
+NewLargeObjectSpace::NewLargeObjectSpace(Heap* heap)
+    : LargeObjectSpace(heap, NEW_LO_SPACE) {}
+
+size_t NewLargeObjectSpace::Available() {
+  // TODO(hpayer): Update as soon as we have a growing strategy.
+  return 0;
+}
 }  // namespace internal
 }  // namespace v8

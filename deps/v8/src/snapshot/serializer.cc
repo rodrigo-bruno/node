@@ -142,7 +142,7 @@ void Serializer<AllocatorT>::VisitRootPointers(Root root,
 template <class AllocatorT>
 void Serializer<AllocatorT>::PrintStack() {
   for (const auto o : stack_) {
-    o->Print();
+    o->Print(isolate());
     PrintF("\n");
   }
 }
@@ -647,6 +647,7 @@ void Serializer<AllocatorT>::ObjectSerializer::SerializeObject() {
   Map* map = object_->map();
   AllocationSpace space =
       MemoryChunk::FromAddress(object_->address())->owner()->identity();
+  DCHECK(space != NEW_LO_SPACE);
   SerializePrologue(space, size, map);
 
   // Serialize the rest of the object.
@@ -857,10 +858,10 @@ void Serializer<AllocatorT>::ObjectSerializer::VisitRuntimeEntry(
 template <class AllocatorT>
 void Serializer<AllocatorT>::ObjectSerializer::VisitOffHeapTarget(
     Code* host, RelocInfo* rinfo) {
-#ifdef V8_EMBEDDED_BUILTINS
+  DCHECK(FLAG_embedded_builtins);
   {
     STATIC_ASSERT(EmbeddedData::kTableSize == Builtins::builtin_count);
-    CHECK(Builtins::IsEmbeddedBuiltin(host));
+    CHECK(Builtins::IsIsolateIndependentBuiltin(host));
     Address addr = rinfo->target_off_heap_target();
     CHECK_NE(kNullAddress, addr);
     CHECK_NOT_NULL(
@@ -872,9 +873,6 @@ void Serializer<AllocatorT>::ObjectSerializer::VisitOffHeapTarget(
   sink_->PutInt(skip, "SkipB4OffHeapTarget");
   sink_->PutInt(host->builtin_index(), "builtin index");
   bytes_processed_so_far_ += rinfo->target_address_size();
-#else
-  UNREACHABLE();
-#endif
 }
 
 namespace {

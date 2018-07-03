@@ -296,6 +296,14 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
     return UncheckedCast<JSArray>(heap_object);
   }
 
+  TNode<JSArray> TaggedToFastJSArray(TNode<Context> context,
+                                     TNode<Object> value, Label* fail) {
+    GotoIf(TaggedIsSmi(value), fail);
+    TNode<HeapObject> heap_object = CAST(value);
+    GotoIfNot(IsFastJSArray(heap_object, context), fail);
+    return UncheckedCast<JSArray>(heap_object);
+  }
+
   TNode<JSDataView> TaggedToJSDataView(TNode<Object> value, Label* fail) {
     GotoIf(TaggedIsSmi(value), fail);
     TNode<HeapObject> heap_object = CAST(value);
@@ -727,6 +735,14 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
   Node* LoadFromParentFrame(int offset,
                             MachineType rep = MachineType::AnyTagged());
 
+  // Load target function from the current JS frame.
+  // This is an alternative way of getting the target function in addition to
+  // Parameter(Descriptor::kJSTarget). The latter should be used near the
+  // beginning of builtin code while the target value is still in the register
+  // and the former should be used in slow paths in order to reduce register
+  // pressure on the fast path.
+  TNode<JSFunction> LoadTargetFromFrame();
+
   // Load an object pointer from a buffer that isn't in the heap.
   Node* LoadBufferObject(Node* buffer, int offset,
                          MachineType rep = MachineType::AnyTagged());
@@ -1064,9 +1080,14 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
 
   Node* LoadSharedFunctionInfoBytecodeArray(Node* shared);
 
+  void StoreObjectByteNoWriteBarrier(TNode<HeapObject> object, int offset,
+                                     TNode<Word32T> value);
+
   // Store the floating point value of a HeapNumber.
   void StoreHeapNumberValue(SloppyTNode<HeapNumber> object,
                             SloppyTNode<Float64T> value);
+  void StoreMutableHeapNumberValue(SloppyTNode<MutableHeapNumber> object,
+                                   SloppyTNode<Float64T> value);
   // Store a field to an object on the heap.
   Node* StoreObjectField(Node* object, int offset, Node* value);
   Node* StoreObjectField(Node* object, Node* offset, Node* value);
@@ -1152,10 +1173,16 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
                        WriteBarrierMode mode = UPDATE_WRITE_BARRIER);
 
   // Allocate a HeapNumber without initializing its value.
-  TNode<HeapNumber> AllocateHeapNumber(MutableMode mode = IMMUTABLE);
+  TNode<HeapNumber> AllocateHeapNumber();
   // Allocate a HeapNumber with a specific value.
-  TNode<HeapNumber> AllocateHeapNumberWithValue(SloppyTNode<Float64T> value,
-                                                MutableMode mode = IMMUTABLE);
+  TNode<HeapNumber> AllocateHeapNumberWithValue(SloppyTNode<Float64T> value);
+  TNode<HeapNumber> AllocateHeapNumberWithValue(double value) {
+    return AllocateHeapNumberWithValue(Float64Constant(value));
+  }
+
+  // Allocate a MutableHeapNumber with a specific value.
+  TNode<MutableHeapNumber> AllocateMutableHeapNumberWithValue(
+      SloppyTNode<Float64T> value);
 
   // Allocate a BigInt with {length} digits. Sets the sign bit to {false}.
   // Does not initialize the digits.
@@ -1167,11 +1194,6 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
                         TNode<UintPtrT> digit);
   TNode<WordT> LoadBigIntBitfield(TNode<BigInt> bigint);
   TNode<UintPtrT> LoadBigIntDigit(TNode<BigInt> bigint, int digit_index);
-
-  TNode<HeapNumber> AllocateHeapNumberWithValue(double value,
-                                                MutableMode mode = IMMUTABLE) {
-    return AllocateHeapNumberWithValue(Float64Constant(value), mode);
-  }
 
   // Allocate a SeqOneByteString with the given length.
   TNode<String> AllocateSeqOneByteString(int length,
@@ -1242,6 +1264,9 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
       Node* table, Node* hash,
       std::function<void(Node*, Label*, Label*)> key_compare,
       Variable* entry_start_position, Label* entry_found, Label* not_found);
+
+  template <typename CollectionType>
+  TNode<CollectionType> AllocateSmallOrderedHashTable(TNode<IntPtrT> capacity);
 
   Node* AllocateStruct(Node* map, AllocationFlags flags = kNone);
   void InitializeStructBody(Node* object, Node* map, Node* size,
@@ -1543,7 +1568,7 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
                                    Variable* var_numeric,
                                    Variable* var_feedback);
 
-  Node* TimesPointerSize(Node* value);
+  SloppyTNode<WordT> TimesPointerSize(Node* value);
 
   // Type conversions.
   // Throws a TypeError for {method_name} if {value} is not coercible to Object,
@@ -1596,7 +1621,8 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
   TNode<BoolT> IsConstructorMap(SloppyTNode<Map> map);
   TNode<BoolT> IsConstructor(SloppyTNode<HeapObject> object);
   TNode<BoolT> IsDeprecatedMap(SloppyTNode<Map> map);
-  TNode<BoolT> IsDictionary(SloppyTNode<HeapObject> object);
+  TNode<BoolT> IsNameDictionary(SloppyTNode<HeapObject> object);
+  TNode<BoolT> IsGlobalDictionary(SloppyTNode<HeapObject> object);
   TNode<BoolT> IsExtensibleMap(SloppyTNode<Map> map);
   TNode<BoolT> IsExternalStringInstanceType(SloppyTNode<Int32T> instance_type);
   TNode<BoolT> IsFastJSArray(SloppyTNode<Object> object,
@@ -1628,6 +1654,7 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
   TNode<BoolT> IsJSArrayIterator(SloppyTNode<HeapObject> object);
   TNode<BoolT> IsJSAsyncGeneratorObject(SloppyTNode<HeapObject> object);
   TNode<BoolT> IsJSFunctionInstanceType(SloppyTNode<Int32T> instance_type);
+  TNode<BoolT> IsAllocationSiteInstanceType(SloppyTNode<Int32T> instance_type);
   TNode<BoolT> IsJSFunctionMap(SloppyTNode<Map> map);
   TNode<BoolT> IsJSFunction(SloppyTNode<HeapObject> object);
   TNode<BoolT> IsJSGeneratorObject(SloppyTNode<HeapObject> object);
@@ -2145,8 +2172,8 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
       Label* not_data, Label* if_hole);
   void BasicStoreNumberDictionaryElement(TNode<NumberDictionary> dictionary,
                                          TNode<IntPtrT> intptr_index,
-                                         TNode<Object> value, Label* fail,
-                                         Label* if_hole);
+                                         TNode<Object> value, Label* not_data,
+                                         Label* if_hole, Label* read_only);
 
   template <class Dictionary>
   void FindInsertionEntry(TNode<Dictionary> dictionary, TNode<Name> key,
@@ -2623,6 +2650,8 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
 
   bool ConstexprBoolNot(bool value) { return !value; }
 
+  bool ConstexprInt31Equal(int31_t a, int31_t b) { return a == b; }
+
   void PerformStackCheck(TNode<Context> context);
 
  protected:
@@ -2728,6 +2757,9 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
   TNode<String> AllocateConsString(Heap::RootListIndex map_root_index,
                                    TNode<Smi> length, TNode<String> first,
                                    TNode<String> second, AllocationFlags flags);
+
+  // Allocate a MutableHeapNumber without initializing its value.
+  TNode<MutableHeapNumber> AllocateMutableHeapNumber();
 
   Node* SelectImpl(TNode<BoolT> condition, const NodeGenerator& true_body,
                    const NodeGenerator& false_body, MachineRepresentation rep);

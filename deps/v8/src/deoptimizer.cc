@@ -556,10 +556,10 @@ void Deoptimizer::PrintFunctionName() {
 }
 
 Handle<JSFunction> Deoptimizer::function() const {
-  return Handle<JSFunction>(function_);
+  return Handle<JSFunction>(function_, isolate());
 }
 Handle<Code> Deoptimizer::compiled_code() const {
-  return Handle<Code>(compiled_code_);
+  return Handle<Code>(compiled_code_, isolate());
 }
 
 Deoptimizer::~Deoptimizer() {
@@ -600,16 +600,41 @@ int Deoptimizer::GetDeoptimizationId(Isolate* isolate, Address addr,
                                      DeoptimizeKind kind) {
   DeoptimizerData* data = isolate->deoptimizer_data();
   CHECK_LE(kind, DeoptimizerData::kLastDeoptimizeKind);
+  DCHECK(IsInDeoptimizationTable(isolate, addr, kind));
   Code* code = data->deopt_entry_code(kind);
-  if (code == nullptr) return kNotDeoptimizationEntry;
   Address start = code->raw_instruction_start();
-  if (addr < start ||
-      addr >= start + (kMaxNumberOfEntries * table_entry_size_)) {
-    return kNotDeoptimizationEntry;
-  }
   DCHECK_EQ(0,
             static_cast<int>(addr - start) % table_entry_size_);
   return static_cast<int>(addr - start) / table_entry_size_;
+}
+
+bool Deoptimizer::IsInDeoptimizationTable(Isolate* isolate, Address addr,
+                                          DeoptimizeKind type) {
+  DeoptimizerData* data = isolate->deoptimizer_data();
+  CHECK_LE(type, DeoptimizerData::kLastDeoptimizeKind);
+  Code* code = data->deopt_entry_code(type);
+  if (code == nullptr) return false;
+  Address start = code->raw_instruction_start();
+  return ((table_entry_size_ == 0 && addr == start) ||
+          (addr >= start &&
+           addr < start + (kMaxNumberOfEntries * table_entry_size_)));
+}
+
+bool Deoptimizer::IsDeoptimizationEntry(Isolate* isolate, Address addr,
+                                        DeoptimizeKind* type) {
+  if (IsInDeoptimizationTable(isolate, addr, DeoptimizeKind::kEager)) {
+    *type = DeoptimizeKind::kEager;
+    return true;
+  }
+  if (IsInDeoptimizationTable(isolate, addr, DeoptimizeKind::kSoft)) {
+    *type = DeoptimizeKind::kSoft;
+    return true;
+  }
+  if (IsInDeoptimizationTable(isolate, addr, DeoptimizeKind::kLazy)) {
+    *type = DeoptimizeKind::kLazy;
+    return true;
+  }
+  return false;
 }
 
 int Deoptimizer::GetDeoptimizedCodeCount(Isolate* isolate) {
@@ -713,7 +738,7 @@ void Deoptimizer::DoComputeOutputFrames() {
 
   TranslationIterator state_iterator(translations, translation_index);
   translated_state_.Init(
-      input_->GetFramePointerAddress(), &state_iterator,
+      isolate_, input_->GetFramePointerAddress(), &state_iterator,
       input_data->LiteralArray(), input_->GetRegisterValues(),
       trace_scope_ == nullptr ? nullptr : trace_scope_->file(),
       function_->IsHeapObject()
@@ -2154,7 +2179,8 @@ int MaterializedObjectStore::StackIdToIndex(Address fp) {
 
 
 Handle<FixedArray> MaterializedObjectStore::GetStackEntries() {
-  return Handle<FixedArray>(isolate()->heap()->materialized_objects());
+  return Handle<FixedArray>(isolate()->heap()->materialized_objects(),
+                            isolate());
 }
 
 
@@ -2669,7 +2695,8 @@ int TranslatedFrame::GetValueCount() {
 
 void TranslatedFrame::Handlify() {
   if (raw_shared_info_ != nullptr) {
-    shared_info_ = Handle<SharedFunctionInfo>(raw_shared_info_);
+    shared_info_ = Handle<SharedFunctionInfo>(raw_shared_info_,
+                                              raw_shared_info_->GetIsolate());
     raw_shared_info_ = nullptr;
   }
   for (auto& value : values_) {
@@ -3200,20 +3227,20 @@ TranslatedState::TranslatedState(const JavaScriptFrame* frame) {
   DCHECK(data != nullptr && deopt_index != Safepoint::kNoDeoptimizationIndex);
   TranslationIterator it(data->TranslationByteArray(),
                          data->TranslationIndex(deopt_index)->value());
-  Init(frame->fp(), &it, data->LiteralArray(), nullptr /* registers */,
-       nullptr /* trace file */,
+  Init(frame->isolate(), frame->fp(), &it, data->LiteralArray(),
+       nullptr /* registers */, nullptr /* trace file */,
        frame->function()->shared()->internal_formal_parameter_count());
 }
 
-void TranslatedState::Init(Address input_frame_pointer,
+void TranslatedState::Init(Isolate* isolate, Address input_frame_pointer,
                            TranslationIterator* iterator,
                            FixedArray* literal_array, RegisterValues* registers,
                            FILE* trace_file, int formal_parameter_count) {
   DCHECK(frames_.empty());
 
   formal_parameter_count_ = formal_parameter_count;
+  isolate_ = isolate;
 
-  isolate_ = literal_array->GetIsolate();
   // Read out the 'header' translation.
   Translation::Opcode opcode =
       static_cast<Translation::Opcode>(iterator->Next());
@@ -3379,7 +3406,15 @@ void TranslatedState::InitializeCapturedObjectAt(
     case WITH_CONTEXT_TYPE:
     case BOILERPLATE_DESCRIPTION_TYPE:
     case HASH_TABLE_TYPE:
+    case ORDERED_HASH_MAP_TYPE:
+    case ORDERED_HASH_SET_TYPE:
+    case NAME_DICTIONARY_TYPE:
+    case GLOBAL_DICTIONARY_TYPE:
+    case NUMBER_DICTIONARY_TYPE:
+    case SIMPLE_NUMBER_DICTIONARY_TYPE:
+    case STRING_TABLE_TYPE:
     case PROPERTY_ARRAY_TYPE:
+    case SCRIPT_CONTEXT_TABLE_TYPE:
       InitializeObjectWithTaggedFieldsAt(frame, &value_index, slot, map,
                                          no_allocation);
       break;
@@ -3438,9 +3473,9 @@ void TranslatedState::MaterializeMutableHeapNumber(TranslatedFrame* frame,
   CHECK_NE(TranslatedValue::kCapturedObject,
            frame->values_[*value_index].kind());
   Handle<Object> value = frame->values_[*value_index].GetValue();
-  Handle<HeapNumber> box;
   CHECK(value->IsNumber());
-  box = isolate()->factory()->NewHeapNumber(value->Number(), MUTABLE);
+  Handle<MutableHeapNumber> box =
+      isolate()->factory()->NewMutableHeapNumber(value->Number());
   (*value_index)++;
   slot->set_storage(box);
 }
@@ -3502,6 +3537,7 @@ void TranslatedState::EnsureCapturedObjectAllocatedAt(
       return MaterializeMutableHeapNumber(frame, &value_index, slot);
 
     case FIXED_ARRAY_TYPE:
+    case SCRIPT_CONTEXT_TABLE_TYPE:
     case BLOCK_CONTEXT_TYPE:
     case CATCH_CONTEXT_TYPE:
     case DEBUG_EVALUATE_CONTEXT_TYPE:
@@ -3511,7 +3547,14 @@ void TranslatedState::EnsureCapturedObjectAllocatedAt(
     case NATIVE_CONTEXT_TYPE:
     case SCRIPT_CONTEXT_TYPE:
     case WITH_CONTEXT_TYPE:
-    case HASH_TABLE_TYPE: {
+    case HASH_TABLE_TYPE:
+    case ORDERED_HASH_MAP_TYPE:
+    case ORDERED_HASH_SET_TYPE:
+    case NAME_DICTIONARY_TYPE:
+    case GLOBAL_DICTIONARY_TYPE:
+    case NUMBER_DICTIONARY_TYPE:
+    case SIMPLE_NUMBER_DICTIONARY_TYPE:
+    case STRING_TABLE_TYPE: {
       // Check we have the right size.
       int array_length =
           Smi::cast(frame->values_[value_index].GetRawValue())->value();
@@ -3601,7 +3644,7 @@ void TranslatedState::EnsurePropertiesAllocatedAndMarked(
   properties_slot->set_storage(object_storage);
 
   // Set markers for the double properties.
-  Handle<DescriptorArray> descriptors(map->instance_descriptors());
+  Handle<DescriptorArray> descriptors(map->instance_descriptors(), isolate());
   int field_count = map->NumberOfOwnDescriptors();
   for (int i = 0; i < field_count; i++) {
     FieldIndex index = FieldIndex::ForDescriptor(*map, i);
@@ -3634,7 +3677,7 @@ void TranslatedState::EnsureJSObjectAllocated(TranslatedValue* slot,
 
   Handle<ByteArray> object_storage = AllocateStorageFor(slot);
   // Now we handle the interesting (JSObject) case.
-  Handle<DescriptorArray> descriptors(map->instance_descriptors());
+  Handle<DescriptorArray> descriptors(map->instance_descriptors(), isolate());
   int field_count = map->NumberOfOwnDescriptors();
 
   // Set markers for the double properties.
@@ -3898,7 +3941,7 @@ void TranslatedState::VerifyMaterializedObjects() {
     if (slot->kind() == TranslatedValue::kCapturedObject) {
       CHECK_EQ(slot, GetValueByObjectIndex(slot->object_index()));
       if (slot->materialization_state() == TranslatedValue::kFinished) {
-        slot->GetStorage()->ObjectVerify();
+        slot->GetStorage()->ObjectVerify(isolate());
       } else {
         CHECK_EQ(slot->materialization_state(),
                  TranslatedValue::kUninitialized);

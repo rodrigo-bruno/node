@@ -180,15 +180,17 @@ TF_BUILTIN(DebugBreakTrampoline, CodeStubAssembler) {
   TNode<Object> new_target = CAST(Parameter(Descriptor::kJSNewTarget));
   TNode<Int32T> arg_count =
       UncheckedCast<Int32T>(Parameter(Descriptor::kJSActualArgumentsCount));
-  TNode<JSFunction> function = CAST(LoadFromFrame(
-      StandardFrameConstants::kFunctionOffset, MachineType::TaggedPointer()));
+  TNode<JSFunction> function = CAST(Parameter(Descriptor::kJSTarget));
 
   // Check break-at-entry flag on the debug info.
   TNode<SharedFunctionInfo> shared =
       CAST(LoadObjectField(function, JSFunction::kSharedFunctionInfoOffset));
-  TNode<Object> maybe_debug_info =
-      LoadObjectField(shared, SharedFunctionInfo::kDebugInfoOffset);
-  GotoIf(TaggedIsSmi(maybe_debug_info), &tailcall_to_shared);
+  TNode<Object> maybe_heap_object_or_smi = LoadObjectField(
+      shared, SharedFunctionInfo::kFunctionIdentifierOrDebugInfoOffset);
+  TNode<HeapObject> maybe_debug_info =
+      TaggedToHeapObject(maybe_heap_object_or_smi, &tailcall_to_shared);
+  GotoIfNot(HasInstanceType(maybe_debug_info, InstanceType::DEBUG_INFO_TYPE),
+            &tailcall_to_shared);
 
   {
     TNode<DebugInfo> debug_info = CAST(maybe_debug_info);
@@ -688,7 +690,60 @@ class InternalBuiltinsAssembler : public CodeStubAssembler {
     StoreNoWriteBarrier(MachineRepresentation::kTagged, ExternalConstant(ref),
                         TheHoleConstant());
   }
+
+  template <typename Descriptor>
+  void GenerateAdaptorWithExitFrameType(
+      Builtins::ExitFrameType exit_frame_type);
 };
+
+template <typename Descriptor>
+void InternalBuiltinsAssembler::GenerateAdaptorWithExitFrameType(
+    Builtins::ExitFrameType exit_frame_type) {
+  TNode<JSFunction> target = CAST(Parameter(Descriptor::kTarget));
+  TNode<Object> new_target = CAST(Parameter(Descriptor::kNewTarget));
+  TNode<WordT> c_function =
+      UncheckedCast<WordT>(Parameter(Descriptor::kCFunction));
+
+  // The logic contained here is mirrored for TurboFan inlining in
+  // JSTypedLowering::ReduceJSCall{Function,Construct}. Keep these in sync.
+
+  // Make sure we operate in the context of the called function (for example
+  // ConstructStubs implemented in C++ will be run in the context of the caller
+  // instead of the callee, due to the way that [[Construct]] is defined for
+  // ordinary functions).
+  TNode<Context> context =
+      CAST(LoadObjectField(target, JSFunction::kContextOffset));
+
+  // Update arguments count for CEntry to contain the number of arguments
+  // including the receiver and the extra arguments.
+  TNode<Int32T> argc =
+      UncheckedCast<Int32T>(Parameter(Descriptor::kActualArgumentsCount));
+  argc = Int32Add(
+      argc,
+      Int32Constant(BuiltinExitFrameConstants::kNumExtraArgsWithReceiver));
+
+  TNode<Code> code = HeapConstant(
+      CodeFactory::CEntry(isolate(), 1, kDontSaveFPRegs, kArgvOnStack,
+                          exit_frame_type == Builtins::BUILTIN_EXIT));
+
+  // Unconditionally push argc, target and new target as extra stack arguments.
+  // They will be used by stack frame iterators when constructing stack trace.
+  TailCallStub(CEntry1ArgvOnStackDescriptor{},  // descriptor
+               code, context,       // standard arguments for TailCallStub
+               argc, c_function,    // register arguments
+               TheHoleConstant(),   // additional stack argument 1 (padding)
+               SmiFromInt32(argc),  // additional stack argument 2
+               target,              // additional stack argument 3
+               new_target);         // additional stack argument 4
+}
+
+TF_BUILTIN(AdaptorWithExitFrame, InternalBuiltinsAssembler) {
+  GenerateAdaptorWithExitFrameType<Descriptor>(Builtins::EXIT);
+}
+
+TF_BUILTIN(AdaptorWithBuiltinExitFrame, InternalBuiltinsAssembler) {
+  GenerateAdaptorWithExitFrameType<Descriptor>(Builtins::BUILTIN_EXIT);
+}
 
 TNode<IntPtrT> InternalBuiltinsAssembler::GetPendingMicrotaskCount() {
   auto ref = ExternalReference::pending_microtask_count_address(isolate());
@@ -1105,10 +1160,14 @@ TF_BUILTIN(AllocateInOldSpace, CodeStubAssembler) {
                   SmiFromInt32(requested_size), SmiConstant(flags));
 }
 
+TF_BUILTIN(Abort, CodeStubAssembler) {
+  TNode<Smi> message_id = CAST(Parameter(Descriptor::kMessageOrMessageId));
+  TailCallRuntime(Runtime::kAbort, NoContextConstant(), message_id);
+}
+
 TF_BUILTIN(AbortJS, CodeStubAssembler) {
-  Node* message = Parameter(Descriptor::kObject);
-  Node* reason = SmiConstant(0);
-  TailCallRuntime(Runtime::kAbortJS, reason, message);
+  TNode<String> message = CAST(Parameter(Descriptor::kMessageOrMessageId));
+  TailCallRuntime(Runtime::kAbortJS, NoContextConstant(), message);
 }
 
 void Builtins::Generate_CEntry_Return1_DontSaveFPRegs_ArgvOnStack_NoBuiltinExit(

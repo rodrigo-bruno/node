@@ -112,11 +112,12 @@ class DescriptorArray : public WeakFixedArray {
   void Sort();
 
   // Search the instance descriptors for given name.
-  INLINE(int Search(Name* name, int number_of_own_descriptors));
+  V8_INLINE int Search(Name* name, int number_of_own_descriptors);
+  V8_INLINE int Search(Name* name, Map* map);
 
   // As the above, but uses DescriptorLookupCache and updates it when
   // necessary.
-  INLINE(int SearchWithCache(Isolate* isolate, Name* name, Map* map));
+  V8_INLINE int SearchWithCache(Isolate* isolate, Name* name, Map* map);
 
   bool IsEqualUpTo(DescriptorArray* desc, int nof_descriptors);
 
@@ -152,17 +153,12 @@ class DescriptorArray : public WeakFixedArray {
   void PrintDescriptorDetails(std::ostream& os, int descriptor,
                               PropertyDetails::PrintMode mode);
 
-#if defined(DEBUG) || defined(OBJECT_PRINT)
-  // For our gdb macros, we should perhaps change these in the future.
-  void Print();
-  void DescriptorArrayPrint(std::ostream& os);
-#endif
-
+  DECL_PRINTER(DescriptorArray)
   DECL_VERIFIER(DescriptorArray)
 
 #ifdef DEBUG
   // Is the descriptor array sorted and without duplicates?
-  bool IsSortedNoDuplicates(int valid_descriptors = -1);
+  bool IsSortedNoDuplicates(Isolate* isolate, int valid_descriptors = -1);
 
   // Are two DescriptorArrays equal?
   bool IsEqualTo(DescriptorArray* other);

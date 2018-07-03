@@ -683,7 +683,7 @@ class ParserBase {
   int script_id() { return script_id_; }
   void set_script_id(int id) { script_id_ = id; }
 
-  INLINE(Token::Value peek()) {
+  V8_INLINE Token::Value peek() {
     if (stack_overflow()) return Token::ILLEGAL;
     return scanner()->peek();
   }
@@ -695,12 +695,12 @@ class ParserBase {
                                         : scanner_->location().end_pos;
   }
 
-  INLINE(Token::Value PeekAhead()) {
+  V8_INLINE Token::Value PeekAhead() {
     if (stack_overflow()) return Token::ILLEGAL;
     return scanner()->PeekAhead();
   }
 
-  INLINE(Token::Value Next()) {
+  V8_INLINE Token::Value Next() {
     if (stack_overflow()) return Token::ILLEGAL;
     {
       if (GetCurrentStackPosition() < stack_limit_) {
@@ -2942,7 +2942,7 @@ ParserBase<Impl>::ParseAssignmentExpression(bool accept_IN, bool* ok) {
     }
     expression = ParseArrowFunctionLiteral(accept_IN, parameters,
                                            rewritable_length, CHECK_OK);
-    DiscardExpressionClassifier();
+    Accumulate(ExpressionClassifier::AsyncArrowFormalParametersProduction);
     classifier()->RecordPatternError(arrow_loc,
                                      MessageTemplate::kUnexpectedToken,
                                      Token::String(Token::ARROW));
@@ -4479,9 +4479,8 @@ ParserBase<Impl>::ParseArrowFunctionLiteral(
     const char* event_name =
         is_lazy_top_level_function ? "preparse-no-resolution" : "parse";
     const char* name = "arrow function";
-    logger_->FunctionEvent(event_name, nullptr, script_id(), ms,
-                           scope->start_position(), scope->end_position(), name,
-                           strlen(name));
+    logger_->FunctionEvent(event_name, script_id(), ms, scope->start_position(),
+                           scope->end_position(), name, strlen(name));
   }
 
   return function_literal;

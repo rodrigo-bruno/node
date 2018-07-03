@@ -53,20 +53,30 @@ const char* const RelocInfo::kFillerCommentString = "DEOPTIMIZATION PADDING";
 // -----------------------------------------------------------------------------
 // Implementation of AssemblerBase
 
-#if V8_TARGET_ARCH_X64 || V8_TARGET_ARCH_ARM64
-AssemblerBase::IsolateData::IsolateData(Isolate* isolate)
-    : IsolateData(isolate->serializer_enabled() ? kSerializerEnabled
-                                                : kSerializerDisabled,
-                  isolate->heap()->memory_allocator()->code_range()->start()) {}
-#else
-AssemblerBase::IsolateData::IsolateData(Isolate* isolate)
-    : IsolateData(isolate->serializer_enabled() ? kSerializerEnabled
-                                                : kSerializerDisabled) {}
+AssemblerBase::Options AssemblerBase::DefaultOptions(
+    Isolate* isolate, bool explicitly_support_serialization) {
+  Options options;
+  bool serializer =
+      isolate->serializer_enabled() || explicitly_support_serialization;
+  options.record_reloc_info_for_serialization = serializer;
+  options.enable_root_array_delta_access = !serializer;
+#ifdef USE_SIMULATOR
+  // Don't generate simulator specific code if we are building a snapshot, which
+  // might be run on real hardware.
+  options.enable_simulator_code = !serializer;
 #endif
+  options.isolate_independent_code = isolate->ShouldLoadConstantsFromRootList();
+  options.inline_offheap_trampolines = !serializer;
+#if V8_TARGET_ARCH_X64 || V8_TARGET_ARCH_ARM64
+  options.code_range_start =
+      isolate->heap()->memory_allocator()->code_range()->start();
+#endif
+  return options;
+}
 
-AssemblerBase::AssemblerBase(IsolateData isolate_data, void* buffer,
+AssemblerBase::AssemblerBase(const Options& options, void* buffer,
                              int buffer_size)
-    : isolate_data_(isolate_data),
+    : options_(options),
       enabled_cpu_features_(0),
       emit_debug_code_(FLAG_debug_code),
       predictable_code_size_(false),
@@ -417,7 +427,6 @@ RelocIterator::RelocIterator(const CodeReference code_reference, int mode_mask)
                     code_reference.relocation_end(),
                     code_reference.relocation_start(), mode_mask) {}
 
-#ifdef V8_EMBEDDED_BUILTINS
 RelocIterator::RelocIterator(EmbeddedData* embedded_data, Code* code,
                              int mode_mask)
     : RelocIterator(
@@ -425,7 +434,6 @@ RelocIterator::RelocIterator(EmbeddedData* embedded_data, Code* code,
           code->constant_pool(),
           code->relocation_start() + code->relocation_size(),
           code->relocation_start(), mode_mask) {}
-#endif  // V8_EMBEDDED_BUILTINS
 
 RelocIterator::RelocIterator(const CodeDesc& desc, int mode_mask)
     : RelocIterator(nullptr, reinterpret_cast<Address>(desc.buffer), 0,
@@ -554,8 +562,6 @@ const char* RelocInfo::RelocModeName(RelocInfo::Mode rmode) {
       return "internal wasm call";
     case WASM_STUB_CALL:
       return "wasm stub call";
-    case WASM_CODE_TABLE_ENTRY:
-      return "wasm code table entry";
     case JS_TO_WASM_CALL:
       return "js to wasm call";
     case NUMBER_OF_MODES:
@@ -577,10 +583,13 @@ void RelocInfo::Print(Isolate* isolate, std::ostream& os) {  // NOLINT
   } else if (rmode_ == EMBEDDED_OBJECT) {
     os << "  (" << Brief(target_object()) << ")";
   } else if (rmode_ == EXTERNAL_REFERENCE) {
-    ExternalReferenceEncoder ref_encoder(isolate);
-    os << " ("
-       << ref_encoder.NameOfAddress(isolate, target_external_reference())
-       << ")  (" << reinterpret_cast<const void*>(target_external_reference())
+    if (isolate) {
+      ExternalReferenceEncoder ref_encoder(isolate);
+      os << " ("
+         << ref_encoder.NameOfAddress(isolate, target_external_reference())
+         << ") ";
+    }
+    os << " (" << reinterpret_cast<const void*>(target_external_reference())
        << ")";
   } else if (IsCodeTarget(rmode_)) {
     const Address code_target = target_address();
@@ -592,14 +601,14 @@ void RelocInfo::Print(Isolate* isolate, std::ostream& os) {  // NOLINT
     } else if (code->kind() == Code::STUB) {
       os << " " << CodeStub::MajorName(CodeStub::GetMajorKey(code));
     }
-    os << ") ";
-    os << " (" << reinterpret_cast<const void*>(target_address()) << ")";
+    os << ")  (" << reinterpret_cast<const void*>(target_address()) << ")";
   } else if (IsRuntimeEntry(rmode_) && isolate->deoptimizer_data() != nullptr) {
-    // Depotimization bailouts are stored as runtime entries.
-    int id = Deoptimizer::GetDeoptimizationId(isolate, target_address(),
-                                              DeoptimizeKind::kEager);
-    if (id != Deoptimizer::kNotDeoptimizationEntry) {
-      os << "  (deoptimization bailout " << id << ")";
+    // Deoptimization bailouts are stored as runtime entries.
+    DeoptimizeKind type;
+    if (Deoptimizer::IsDeoptimizationEntry(isolate, target_address(), &type)) {
+      int id = GetDeoptimizationId(isolate, type);
+      os << "  (" << Deoptimizer::MessageFor(type) << " deoptimization bailout "
+         << id << ")";
     }
   } else if (IsConstPool(rmode_)) {
     os << " (size " << static_cast<int>(data_) << ")";
@@ -653,7 +662,6 @@ void RelocInfo::Verify(Isolate* isolate) {
     case WASM_CALL:
     case WASM_STUB_CALL:
     case JS_TO_WASM_CALL:
-    case WASM_CODE_TABLE_ENTRY:
     case NONE:
       break;
     case NUMBER_OF_MODES:

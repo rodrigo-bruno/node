@@ -368,7 +368,7 @@ bool Heap::CreateInitialMaps() {
     ALLOCATE_VARSIZE_MAP(FEEDBACK_VECTOR_TYPE, feedback_vector)
     ALLOCATE_PRIMITIVE_MAP(HEAP_NUMBER_TYPE, HeapNumber::kSize, heap_number,
                            Context::NUMBER_FUNCTION_INDEX)
-    ALLOCATE_MAP(MUTABLE_HEAP_NUMBER_TYPE, HeapNumber::kSize,
+    ALLOCATE_MAP(MUTABLE_HEAP_NUMBER_TYPE, MutableHeapNumber::kSize,
                  mutable_heap_number)
     ALLOCATE_PRIMITIVE_MAP(SYMBOL_TYPE, Symbol::kSize, symbol,
                            Context::SYMBOL_FUNCTION_INDEX)
@@ -455,13 +455,14 @@ bool Heap::CreateInitialMaps() {
     ALLOCATE_VARSIZE_MAP(TRANSITION_ARRAY_TYPE, transition_array)
 
     ALLOCATE_VARSIZE_MAP(HASH_TABLE_TYPE, hash_table)
-    ALLOCATE_VARSIZE_MAP(HASH_TABLE_TYPE, ordered_hash_map)
-    ALLOCATE_VARSIZE_MAP(HASH_TABLE_TYPE, ordered_hash_set)
-    ALLOCATE_VARSIZE_MAP(HASH_TABLE_TYPE, name_dictionary)
-    ALLOCATE_VARSIZE_MAP(HASH_TABLE_TYPE, global_dictionary)
-    ALLOCATE_VARSIZE_MAP(HASH_TABLE_TYPE, number_dictionary)
-    ALLOCATE_VARSIZE_MAP(HASH_TABLE_TYPE, simple_number_dictionary)
-    ALLOCATE_VARSIZE_MAP(HASH_TABLE_TYPE, string_table)
+    ALLOCATE_VARSIZE_MAP(ORDERED_HASH_MAP_TYPE, ordered_hash_map)
+    ALLOCATE_VARSIZE_MAP(ORDERED_HASH_SET_TYPE, ordered_hash_set)
+    ALLOCATE_VARSIZE_MAP(NAME_DICTIONARY_TYPE, name_dictionary)
+    ALLOCATE_VARSIZE_MAP(GLOBAL_DICTIONARY_TYPE, global_dictionary)
+    ALLOCATE_VARSIZE_MAP(NUMBER_DICTIONARY_TYPE, number_dictionary)
+    ALLOCATE_VARSIZE_MAP(SIMPLE_NUMBER_DICTIONARY_TYPE,
+                         simple_number_dictionary)
+    ALLOCATE_VARSIZE_MAP(STRING_TABLE_TYPE, string_table)
 
     ALLOCATE_VARSIZE_MAP(EPHEMERON_HASH_TABLE_TYPE, ephemeron_hash_table)
 
@@ -475,7 +476,7 @@ bool Heap::CreateInitialMaps() {
     ALLOCATE_VARSIZE_MAP(MODULE_CONTEXT_TYPE, module_context)
     ALLOCATE_VARSIZE_MAP(EVAL_CONTEXT_TYPE, eval_context)
     ALLOCATE_VARSIZE_MAP(SCRIPT_CONTEXT_TYPE, script_context)
-    ALLOCATE_VARSIZE_MAP(FIXED_ARRAY_TYPE, script_context_table)
+    ALLOCATE_VARSIZE_MAP(SCRIPT_CONTEXT_TABLE_TYPE, script_context_table)
 
     ALLOCATE_VARSIZE_MAP(BOILERPLATE_DESCRIPTION_TYPE, boilerplate_description)
 
@@ -586,18 +587,16 @@ void Heap::CreateInitialObjects() {
   Factory* factory = isolate()->factory();
 
   // The -0 value must be set before NewNumber works.
-  set_minus_zero_value(
-      *factory->NewHeapNumber(-0.0, IMMUTABLE, TENURED_READ_ONLY));
+  set_minus_zero_value(*factory->NewHeapNumber(-0.0, TENURED_READ_ONLY));
   DCHECK(std::signbit(minus_zero_value()->Number()));
 
   set_nan_value(*factory->NewHeapNumber(
-      std::numeric_limits<double>::quiet_NaN(), IMMUTABLE, TENURED_READ_ONLY));
-  set_hole_nan_value(*factory->NewHeapNumberFromBits(kHoleNanInt64, IMMUTABLE,
-                                                     TENURED_READ_ONLY));
-  set_infinity_value(
-      *factory->NewHeapNumber(V8_INFINITY, IMMUTABLE, TENURED_READ_ONLY));
+      std::numeric_limits<double>::quiet_NaN(), TENURED_READ_ONLY));
+  set_hole_nan_value(
+      *factory->NewHeapNumberFromBits(kHoleNanInt64, TENURED_READ_ONLY));
+  set_infinity_value(*factory->NewHeapNumber(V8_INFINITY, TENURED_READ_ONLY));
   set_minus_infinity_value(
-      *factory->NewHeapNumber(-V8_INFINITY, IMMUTABLE, TENURED_READ_ONLY));
+      *factory->NewHeapNumber(-V8_INFINITY, TENURED_READ_ONLY));
 
   // Allocate cache for single character one byte strings.
   set_single_character_string_cache(
@@ -770,7 +769,7 @@ void Heap::CreateInitialObjects() {
 
   // Handling of script id generation is in Heap::NextScriptId().
   set_last_script_id(Smi::FromInt(v8::UnboundScript::kNoScriptId));
-  set_last_debugging_id(Smi::FromInt(SharedFunctionInfo::kNoDebuggingId));
+  set_last_debugging_id(Smi::FromInt(DebugInfo::kNoDebuggingId));
   set_next_template_serial_number(Smi::kZero);
 
   // Allocate the empty OrderedHashMap.

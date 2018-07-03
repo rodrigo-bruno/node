@@ -141,6 +141,17 @@ TEST_F(DisjointAllocationPoolTest, MergingSkipLargerSrcWithGap) {
 
 enum ModuleStyle : int { Fixed = 0, Growable = 1 };
 
+std::string PrintWasmCodeManageTestParam(
+    ::testing::TestParamInfo<ModuleStyle> info) {
+  switch (info.param) {
+    case Fixed:
+      return "Fixed";
+    case Growable:
+      return "Growable";
+  }
+  UNREACHABLE();
+}
+
 class WasmCodeManagerTest : public TestWithContext,
                             public ::testing::WithParamInterface<ModuleStyle> {
  public:
@@ -152,11 +163,13 @@ class WasmCodeManagerTest : public TestWithContext,
 
   NativeModulePtr AllocModule(WasmCodeManager* manager, size_t size,
                               ModuleStyle style) {
+    std::shared_ptr<WasmModule> module(new WasmModule);
+    module->num_declared_functions = kNumFunctions;
     bool can_request_more = style == Growable;
-    wasm::ModuleEnv env(nullptr, UseTrapHandler::kNoTrapHandler,
+    wasm::ModuleEnv env(module.get(), UseTrapHandler::kNoTrapHandler,
                         RuntimeExceptionSupport::kNoRuntimeExceptionSupport);
-    return manager->NewNativeModule(i_isolate(), size, kNumFunctions, 0,
-                                    can_request_more, env);
+    return manager->NewNativeModule(i_isolate(), size, can_request_more,
+                                    std::move(module), env);
   }
 
   WasmCode* AddCode(NativeModule* native_module, uint32_t index, size_t size) {
@@ -165,8 +178,7 @@ class WasmCodeManagerTest : public TestWithContext,
     std::unique_ptr<byte[]> exec_buff(new byte[size]);
     desc.buffer = exec_buff.get();
     desc.instr_size = static_cast<int>(size);
-    Handle<ByteArray> source_pos = i_isolate()->factory()->empty_byte_array();
-    return native_module->AddCode(desc, 0, index, 0, 0, {}, source_pos,
+    return native_module->AddCode(index, desc, 0, 0, 0, {}, OwnedVector<byte>(),
                                   WasmCode::kOther);
   }
 
@@ -174,7 +186,8 @@ class WasmCodeManagerTest : public TestWithContext,
 };
 
 INSTANTIATE_TEST_CASE_P(Parameterized, WasmCodeManagerTest,
-                        ::testing::Values(Fixed, Growable));
+                        ::testing::Values(Fixed, Growable),
+                        PrintWasmCodeManageTestParam);
 
 TEST_P(WasmCodeManagerTest, EmptyCase) {
   WasmCodeManager manager(0 * page());
@@ -238,11 +251,18 @@ TEST_P(WasmCodeManagerTest, DifferentHeapsApplyLimitsIndependently) {
 TEST_P(WasmCodeManagerTest, GrowingVsFixedModule) {
   WasmCodeManager manager(3 * page());
   NativeModulePtr nm = AllocModule(&manager, 1 * page(), GetParam());
+  size_t module_size = GetParam() == Fixed ? kMaxWasmCodeMemory : 1 * page();
+  size_t remaining_space_in_module = module_size - kJumpTableSize;
   if (GetParam() == Fixed) {
-    ASSERT_DEATH_IF_SUPPORTED(AddCode(nm.get(), 0, kMaxWasmCodeMemory + 1),
-                              "OOM in NativeModule::AddOwnedCode");
+    // Requesting more than the remaining space fails because the module cannot
+    // grow.
+    ASSERT_DEATH_IF_SUPPORTED(
+        AddCode(nm.get(), 0, remaining_space_in_module + kCodeAlignment),
+        "OOM in NativeModule::AddOwnedCode");
   } else {
-    CHECK_NOT_NULL(AddCode(nm.get(), 0, 1 * page() + kCodeAlignment));
+    // The module grows by one page. One page remains uncommitted.
+    CHECK_NOT_NULL(
+        AddCode(nm.get(), 0, remaining_space_in_module + kCodeAlignment));
     CHECK_EQ(manager.remaining_uncommitted_code_space(), 1 * page());
   }
 }

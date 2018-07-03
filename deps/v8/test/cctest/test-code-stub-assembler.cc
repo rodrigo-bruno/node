@@ -402,7 +402,7 @@ TEST(ToString) {
     Handle<String> expected = handle(String::cast(test->get(1)), isolate);
     Handle<Object> result = ft.Call(obj).ToHandleChecked();
     CHECK(result->IsString());
-    CHECK(String::Equals(Handle<String>::cast(result), expected));
+    CHECK(String::Equals(isolate, Handle<String>::cast(result), expected));
   }
 }
 
@@ -906,8 +906,9 @@ TEST(TransitionLookup) {
 
   CHECK(root_map->raw_transitions()->ToStrongHeapObject()->IsTransitionArray());
   Handle<TransitionArray> transitions(
-      TransitionArray::cast(root_map->raw_transitions()->ToStrongHeapObject()));
-  DCHECK(transitions->IsSortedNoDuplicates());
+      TransitionArray::cast(root_map->raw_transitions()->ToStrongHeapObject()),
+      isolate);
+  DCHECK(transitions->IsSortedNoDuplicates(isolate));
 
   // Ensure we didn't overflow transition array and therefore all the
   // combinations of cases are covered.
@@ -2554,7 +2555,7 @@ TEST(NewPromiseCapability) {
         handle(JSFunction::cast(result->reject()), isolate)};
 
     for (auto&& callback : callbacks) {
-      Handle<Context> context(Context::cast(callback->context()));
+      Handle<Context> context(Context::cast(callback->context()), isolate);
       CHECK_EQ(isolate->native_context()->scope_info(), context->scope_info());
       CHECK_EQ(isolate->heap()->the_hole_value(), context->extension());
       CHECK_EQ(*isolate->native_context(), context->native_context());
@@ -2597,7 +2598,7 @@ TEST(NewPromiseCapability) {
         Handle<PromiseCapability>::cast(result_obj);
 
     CHECK(result->promise()->IsJSObject());
-    Handle<JSObject> promise(JSObject::cast(result->promise()));
+    Handle<JSObject> promise(JSObject::cast(result->promise()), isolate);
     CHECK_EQ(constructor_fn->prototype_or_initial_map(), promise->map());
     CHECK(result->resolve()->IsJSFunction());
     CHECK(result->reject()->IsJSFunction());
@@ -2817,7 +2818,8 @@ TEST(LoadJSArrayElementsMap) {
         ft.CallChecked<Map>(handle(Smi::FromInt(kind), isolate));
     ElementsKind elements_kind = static_cast<ElementsKind>(kind);
     Handle<Map> result(
-        isolate->native_context()->GetInitialJSArrayMap(elements_kind));
+        isolate->native_context()->GetInitialJSArrayMap(elements_kind),
+        isolate);
     CHECK_EQ(*csa_result, *result);
   }
 }
@@ -3310,6 +3312,80 @@ TEST(SingleInputPhiElimination) {
   FunctionTester ft(asm_tester.GenerateCode(), kNumParams);
   // Generating code without an assert is enough to make sure that the
   // single-input phi is properly eliminated.
+}
+
+TEST(SmallOrderedHashMapAllocate) {
+  Isolate* isolate(CcTest::InitIsolateOnce());
+  const int kNumParams = 1;
+  CodeAssemblerTester asm_tester(isolate, kNumParams);
+  {
+    CodeStubAssembler m(asm_tester.state());
+    TNode<Smi> capacity = m.CAST(m.Parameter(0));
+    m.Return(m.AllocateSmallOrderedHashTable<SmallOrderedHashMap>(
+        m.SmiToIntPtr(capacity)));
+  }
+  FunctionTester ft(asm_tester.GenerateCode(), kNumParams);
+
+  Factory* factory = isolate->factory();
+  int capacity = SmallOrderedHashMap::kMinCapacity;
+  while (capacity <= SmallOrderedHashMap::kMaxCapacity) {
+    Handle<SmallOrderedHashMap> expected =
+        factory->NewSmallOrderedHashMap(capacity);
+    Handle<Object> result_raw =
+        ft.Call(Handle<Smi>(Smi::FromInt(capacity), isolate)).ToHandleChecked();
+    Handle<SmallOrderedHashMap> actual = Handle<SmallOrderedHashMap>(
+        SmallOrderedHashMap::cast(*result_raw), isolate);
+    CHECK_EQ(capacity, actual->Capacity());
+    CHECK_EQ(0, actual->NumberOfElements());
+    CHECK_EQ(0, actual->NumberOfDeletedElements());
+    CHECK_EQ(capacity / SmallOrderedHashMap::kLoadFactor,
+             actual->NumberOfBuckets());
+    CHECK(memcmp(*expected, *actual, SmallOrderedHashMap::SizeFor(capacity)));
+#ifdef VERIFY_HEAP
+    actual->SmallOrderedHashTableVerify(isolate);
+#endif
+    capacity = capacity << 1;
+  }
+#ifdef VERIFY_HEAP
+  isolate->heap()->Verify();
+#endif
+}
+
+TEST(SmallOrderedHashSetAllocate) {
+  Isolate* isolate(CcTest::InitIsolateOnce());
+  const int kNumParams = 1;
+  CodeAssemblerTester asm_tester(isolate, kNumParams);
+  {
+    CodeStubAssembler m(asm_tester.state());
+    TNode<Smi> capacity = m.CAST(m.Parameter(0));
+    m.Return(m.AllocateSmallOrderedHashTable<SmallOrderedHashSet>(
+        m.SmiToIntPtr(capacity)));
+  }
+  FunctionTester ft(asm_tester.GenerateCode(), kNumParams);
+
+  int capacity = SmallOrderedHashSet::kMinCapacity;
+  Factory* factory = isolate->factory();
+  while (capacity <= SmallOrderedHashSet::kMaxCapacity) {
+    Handle<SmallOrderedHashSet> expected =
+        factory->NewSmallOrderedHashSet(capacity);
+    Handle<Object> result_raw =
+        ft.Call(Handle<Smi>(Smi::FromInt(capacity), isolate)).ToHandleChecked();
+    Handle<SmallOrderedHashSet> actual = Handle<SmallOrderedHashSet>(
+        SmallOrderedHashSet::cast(*result_raw), isolate);
+    CHECK_EQ(capacity, actual->Capacity());
+    CHECK_EQ(0, actual->NumberOfElements());
+    CHECK_EQ(0, actual->NumberOfDeletedElements());
+    CHECK_EQ(capacity / SmallOrderedHashSet::kLoadFactor,
+             actual->NumberOfBuckets());
+    CHECK(memcmp(*expected, *actual, SmallOrderedHashSet::SizeFor(capacity)));
+#ifdef VERIFY_HEAP
+    actual->SmallOrderedHashTableVerify(isolate);
+#endif
+    capacity = capacity << 1;
+  }
+#ifdef VERIFY_HEAP
+  isolate->heap()->Verify();
+#endif
 }
 
 TEST(IsDoubleElementsKind) {

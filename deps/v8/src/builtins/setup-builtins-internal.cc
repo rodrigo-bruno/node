@@ -141,10 +141,11 @@ Code* BuildWithCodeStubAssemblerCS(Isolate* isolate, int32_t builtin_index,
   // and this construction just queries the details from the descriptors table.
   CallInterfaceDescriptor descriptor(interface_descriptor);
   // Ensure descriptor is already initialized.
+  DCHECK_EQ(result_size, descriptor.GetReturnCount());
   DCHECK_LE(0, descriptor.GetRegisterParameterCount());
   compiler::CodeAssemblerState state(
       isolate, &zone, descriptor, Code::BUILTIN, name,
-      PoisoningMitigationLevel::kDontPoison, result_size, 0, builtin_index);
+      PoisoningMitigationLevel::kDontPoison, 0, builtin_index);
   generator(&state);
   Handle<Code> code = compiler::CodeAssembler::GenerateCode(&state);
   PostBuildProfileAndTracing(isolate, *code, name);
@@ -152,12 +153,14 @@ Code* BuildWithCodeStubAssemblerCS(Isolate* isolate, int32_t builtin_index,
 }
 }  // anonymous namespace
 
+// static
 void SetupIsolateDelegate::AddBuiltin(Builtins* builtins, int index,
                                       Code* code) {
   DCHECK_EQ(index, code->builtin_index());
   builtins->set_builtin(index, code);
 }
 
+// static
 void SetupIsolateDelegate::PopulateWithPlaceholders(Isolate* isolate) {
   // Fill the builtins list with placeholders. References to these placeholder
   // builtins are eventually replaced by the actual builtins. This is to
@@ -170,6 +173,7 @@ void SetupIsolateDelegate::PopulateWithPlaceholders(Isolate* isolate) {
   }
 }
 
+// static
 void SetupIsolateDelegate::ReplacePlaceholders(Isolate* isolate) {
   // Replace references from all code objects to placeholders.
   Builtins* builtins = isolate->builtins();
@@ -209,6 +213,7 @@ void SetupIsolateDelegate::ReplacePlaceholders(Isolate* isolate) {
   }
 }
 
+// static
 void SetupIsolateDelegate::SetupBuiltinsInternal(Isolate* isolate) {
   Builtins* builtins = isolate->builtins();
   DCHECK(!builtins->initialized_);

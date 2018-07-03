@@ -108,8 +108,9 @@ LookupIterator LookupIterator::ForTransitionHandler(
 
   if (!transition_map->is_dictionary_map()) {
     int descriptor_number = transition_map->LastAdded();
-    Handle<Map> new_map = Map::PrepareForDataProperty(
-        transition_map, descriptor_number, PropertyConstness::kConst, value);
+    Handle<Map> new_map =
+        Map::PrepareForDataProperty(isolate, transition_map, descriptor_number,
+                                    PropertyConstness::kConst, value);
     // Reload information; this is no-op if nothing changed.
     it.property_details_ =
         new_map->instance_descriptors()->GetDetails(descriptor_number);
@@ -403,11 +404,12 @@ void LookupIterator::PrepareForDataProperty(Handle<Object> value) {
 
   if (holder_obj->IsJSGlobalObject()) {
     Handle<GlobalDictionary> dictionary(
-        JSGlobalObject::cast(*holder_obj)->global_dictionary());
-    Handle<PropertyCell> cell(dictionary->CellAt(dictionary_entry()));
+        JSGlobalObject::cast(*holder_obj)->global_dictionary(), isolate());
+    Handle<PropertyCell> cell(dictionary->CellAt(dictionary_entry()),
+                              isolate());
     property_details_ = cell->property_details();
-    PropertyCell::PrepareForValue(dictionary, dictionary_entry(), value,
-                                  property_details_);
+    PropertyCell::PrepareForValue(isolate(), dictionary, dictionary_entry(),
+                                  value, property_details_);
     return;
   }
   if (!holder_obj->HasFastProperties()) return;
@@ -427,7 +429,7 @@ void LookupIterator::PrepareForDataProperty(Handle<Object> value) {
 
   Handle<Map> old_map(holder_obj->map(), isolate_);
   Handle<Map> new_map = Map::PrepareForDataProperty(
-      old_map, descriptor_number(), new_constness, value);
+      isolate(), old_map, descriptor_number(), new_constness, value);
 
   if (old_map.is_identical_to(new_map)) {
     // Update the property details if the representation was None.
@@ -460,7 +462,7 @@ void LookupIterator::ReconfigureDataProperty(Handle<Object> value,
   if (IsElement()) {
     DCHECK(!holder_obj->HasFixedTypedArrayElements());
     DCHECK(attributes != NONE || !holder_obj->HasFastElements());
-    Handle<FixedArrayBase> elements(holder_obj->elements());
+    Handle<FixedArrayBase> elements(holder_obj->elements(), isolate());
     holder_obj->GetElementsAccessor()->Reconfigure(holder_obj, elements,
                                                    number_, value, attributes);
     ReloadPropertyInformation<true>();
@@ -470,8 +472,9 @@ void LookupIterator::ReconfigureDataProperty(Handle<Object> value,
         isolate_, old_map, descriptor_number(), i::kData, attributes);
     // Force mutable to avoid changing constant value by reconfiguring
     // kData -> kAccessor -> kData.
-    new_map = Map::PrepareForDataProperty(new_map, descriptor_number(),
-                                          PropertyConstness::kMutable, value);
+    new_map =
+        Map::PrepareForDataProperty(isolate(), new_map, descriptor_number(),
+                                    PropertyConstness::kMutable, value);
     JSObject::MigrateToMap(holder_obj, new_map);
     ReloadPropertyInformation<false>();
   }
@@ -488,14 +491,15 @@ void LookupIterator::ReconfigureDataProperty(Handle<Object> value,
     }
     if (holder_obj->IsJSGlobalObject()) {
       Handle<GlobalDictionary> dictionary(
-          JSGlobalObject::cast(*holder_obj)->global_dictionary());
+          JSGlobalObject::cast(*holder_obj)->global_dictionary(), isolate());
 
       Handle<PropertyCell> cell = PropertyCell::PrepareForValue(
-          dictionary, dictionary_entry(), value, details);
+          isolate(), dictionary, dictionary_entry(), value, details);
       cell->set_value(*value);
       property_details_ = cell->property_details();
     } else {
-      Handle<NameDictionary> dictionary(holder_obj->property_dictionary());
+      Handle<NameDictionary> dictionary(holder_obj->property_dictionary(),
+                                        isolate());
       PropertyDetails original_details =
           dictionary->DetailsAt(dictionary_entry());
       int enumeration_index = original_details.dictionary_index();
@@ -511,7 +515,7 @@ void LookupIterator::ReconfigureDataProperty(Handle<Object> value,
 
 #if VERIFY_HEAP
   if (FLAG_verify_heap) {
-    holder->HeapObjectVerify();
+    holder->HeapObjectVerify(isolate());
   }
 #endif
 }
@@ -558,7 +562,7 @@ void LookupIterator::PrepareTransitionToDataProperty(
       property_details_ = PropertyDetails(
           kData, attributes, PropertyCellType::kUninitialized, index);
       PropertyCellType new_type =
-          PropertyCell::UpdatedType(cell, value, property_details_);
+          PropertyCell::UpdatedType(isolate(), cell, value, property_details_);
       property_details_ = property_details_.set_cell_type(new_type);
       cell->set_property_details(property_details_);
       number_ = entry;
@@ -736,7 +740,7 @@ void LookupIterator::TransitionToAccessorProperty(
 
 #if VERIFY_HEAP
   if (FLAG_verify_heap) {
-    receiver->JSObjectVerify();
+    receiver->JSObjectVerify(isolate());
   }
 #endif
 }
@@ -855,7 +859,7 @@ bool LookupIterator::IsConstFieldValueEqualTo(Object* value) const {
     } else {
       Object* current_value = holder->RawFastPropertyAt(field_index);
       DCHECK(current_value->IsMutableHeapNumber());
-      bits = HeapNumber::cast(current_value)->value_as_bits();
+      bits = MutableHeapNumber::cast(current_value)->value_as_bits();
     }
     // Use bit representation of double to to check for hole double, since
     // manipulating the signaling NaN used for the hole in C++, e.g. with
@@ -906,7 +910,8 @@ Handle<Map> LookupIterator::GetFieldOwnerMap() const {
   DCHECK_EQ(kField, property_details_.location());
   DCHECK(!IsElement());
   Map* holder_map = holder_->map();
-  return handle(holder_map->FindFieldOwner(descriptor_number()), isolate_);
+  return handle(holder_map->FindFieldOwner(isolate(), descriptor_number()),
+                isolate_);
 }
 
 FieldIndex LookupIterator::GetFieldIndex() const {

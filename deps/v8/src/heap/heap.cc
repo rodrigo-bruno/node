@@ -165,6 +165,7 @@ Heap::Heap()
       code_space_(nullptr),
       map_space_(nullptr),
       lo_space_(nullptr),
+      new_lo_space_(nullptr),
       read_only_space_(nullptr),
       write_protect_code_memory_(false),
       code_space_memory_modification_scope_depth_(0),
@@ -498,7 +499,7 @@ void Heap::AddRetainingPathTarget(Handle<HeapObject> object,
   } else {
     int index = 0;
     Handle<FixedArrayOfWeakCells> array = FixedArrayOfWeakCells::Add(
-        handle(retaining_path_targets(), isolate()), object, &index);
+        isolate(), handle(retaining_path_targets(), isolate()), object, &index);
     set_retaining_path_targets(*array);
     retaining_path_target_option_[index] = option;
   }
@@ -555,7 +556,7 @@ void Heap::PrintRetainingPath(HeapObject* target, RetainingPathOption option) {
     object->ShortPrint();
     PrintF("\n");
 #ifdef OBJECT_PRINT
-    object->Print();
+    object->Print(isolate());
     PrintF("\n");
 #endif
     --distance;
@@ -673,6 +674,8 @@ const char* Heap::GetSpaceName(int idx) {
       return "code_space";
     case LO_SPACE:
       return "large_object_space";
+    case NEW_LO_SPACE:
+      return "new_large_object_space";
     case RO_SPACE:
       return "read_only_space";
     default:
@@ -870,17 +873,16 @@ void Heap::ProcessPretenuringFeedback() {
     // Step 2: Deopt maybe tenured allocation sites if necessary.
     bool deopt_maybe_tenured = DeoptMaybeTenuredAllocationSites();
     if (deopt_maybe_tenured) {
-      Object* list_element = allocation_sites_list();
-      while (list_element->IsAllocationSite()) {
-        site = AllocationSite::cast(list_element);
-        DCHECK(site->IsAllocationSite());
-        allocation_sites++;
-        if (site->IsMaybeTenure()) {
-          site->set_deopt_dependent_code(true);
-          trigger_deoptimization = true;
-        }
-        list_element = site->weak_next();
-      }
+      ForeachAllocationSite(
+          allocation_sites_list(),
+          [&allocation_sites, &trigger_deoptimization](AllocationSite* site) {
+            DCHECK(site->IsAllocationSite());
+            allocation_sites++;
+            if (site->IsMaybeTenure()) {
+              site->set_deopt_dependent_code(true);
+              trigger_deoptimization = true;
+            }
+          });
     }
 
     if (trigger_deoptimization) {
@@ -919,24 +921,22 @@ void Heap::InvalidateCodeDeoptimizationData(Code* code) {
 void Heap::DeoptMarkedAllocationSites() {
   // TODO(hpayer): If iterating over the allocation sites list becomes a
   // performance issue, use a cache data structure in heap instead.
-  Object* list_element = allocation_sites_list();
-  while (list_element->IsAllocationSite()) {
-    AllocationSite* site = AllocationSite::cast(list_element);
+
+  ForeachAllocationSite(allocation_sites_list(), [this](AllocationSite* site) {
     if (site->deopt_dependent_code()) {
       site->dependent_code()->MarkCodeForDeoptimization(
           isolate_, DependentCode::kAllocationSiteTenuringChangedGroup);
       site->set_deopt_dependent_code(false);
     }
-    list_element = site->weak_next();
-  }
+  });
+
   Deoptimizer::DeoptimizeMarkedCode(isolate_);
 }
 
 
 void Heap::GarbageCollectionEpilogue() {
   TRACE_GC(tracer(), GCTracer::Scope::HEAP_EPILOGUE);
-  // In release mode, we only zap the from space under heap verification.
-  if (Heap::ShouldZapGarbage()) {
+  if (Heap::ShouldZapGarbage() || FLAG_clear_free_memory) {
     ZapFromSpace();
   }
 
@@ -1194,7 +1194,8 @@ intptr_t CompareWords(int size, HeapObject* a, HeapObject* b) {
   return 0;
 }
 
-void ReportDuplicates(int size, std::vector<HeapObject*>& objects) {
+void ReportDuplicates(Isolate* isolate, int size,
+                      std::vector<HeapObject*>& objects) {
   if (objects.size() == 0) return;
 
   sort(objects.begin(), objects.end(), [size](HeapObject* a, HeapObject* b) {
@@ -1230,7 +1231,7 @@ void ReportDuplicates(int size, std::vector<HeapObject*>& objects) {
     PrintF("%d duplicates of size %d each (%dKB)\n", it->first, size,
            duplicate_bytes / KB);
     PrintF("Sample object: ");
-    it->second->Print();
+    it->second->Print(isolate);
     PrintF("============================\n");
   }
 }
@@ -1292,7 +1293,7 @@ void Heap::CollectAllAvailableGarbage(GarbageCollectionReason gc_reason) {
     }
     for (auto it = objects_by_size.rbegin(); it != objects_by_size.rend();
          ++it) {
-      ReportDuplicates(it->first, it->second);
+      ReportDuplicates(isolate(), it->first, it->second);
     }
   }
 }
@@ -1360,6 +1361,9 @@ bool Heap::CollectGarbage(AllocationSpace space,
   if (!CanExpandOldGeneration(new_space()->Capacity())) {
     InvokeNearHeapLimitCallback();
   }
+
+  // Ensure that all pending phantom callbacks are invoked.
+  isolate()->global_handles()->InvokeSecondPassPhantomCallbacks();
 
   // The VM is in the GC state until exiting this function.
   VMState<GC> state(isolate());
@@ -2190,8 +2194,8 @@ void Heap::Scavenge() {
       // Parallel phase scavenging all copied and promoted objects.
       TRACE_GC(tracer(), GCTracer::Scope::SCAVENGER_SCAVENGE_PARALLEL);
       job.Run(isolate()->async_counters());
-      DCHECK(copied_list.IsGlobalEmpty());
-      DCHECK(promotion_list.IsGlobalEmpty());
+      DCHECK(copied_list.IsEmpty());
+      DCHECK(promotion_list.IsEmpty());
     }
     {
       // Scavenge weak global handles.
@@ -2205,8 +2209,8 @@ void Heap::Scavenge() {
               &root_scavenge_visitor);
       scavengers[kMainThreadId]->Process();
 
-      DCHECK(copied_list.IsGlobalEmpty());
-      DCHECK(promotion_list.IsGlobalEmpty());
+      DCHECK(copied_list.IsEmpty());
+      DCHECK(promotion_list.IsEmpty());
       isolate()
           ->global_handles()
           ->IterateNewSpaceWeakUnmodifiedRootsForPhantomHandles(
@@ -2453,20 +2457,37 @@ void Heap::ProcessWeakListRoots(WeakObjectRetainer* retainer) {
   set_allocation_sites_list(retainer->RetainAs(allocation_sites_list()));
 }
 
+void Heap::ForeachAllocationSite(Object* list,
+                                 std::function<void(AllocationSite*)> visitor) {
+  DisallowHeapAllocation disallow_heap_allocation;
+  Object* current = list;
+  while (current->IsAllocationSite()) {
+    AllocationSite* site = AllocationSite::cast(current);
+    visitor(site);
+    Object* current_nested = site->nested_site();
+    while (current_nested->IsAllocationSite()) {
+      AllocationSite* nested_site = AllocationSite::cast(current_nested);
+      visitor(nested_site);
+      current_nested = nested_site->nested_site();
+    }
+    current = site->weak_next();
+  }
+}
+
 void Heap::ResetAllAllocationSitesDependentCode(PretenureFlag flag) {
   DisallowHeapAllocation no_allocation_scope;
-  Object* cur = allocation_sites_list();
   bool marked = false;
-  while (cur->IsAllocationSite()) {
-    AllocationSite* casted = AllocationSite::cast(cur);
-    if (casted->GetPretenureMode() == flag) {
-      casted->ResetPretenureDecision();
-      casted->set_deopt_dependent_code(true);
-      marked = true;
-      RemoveAllocationSitePretenuringFeedback(casted);
-    }
-    cur = casted->weak_next();
-  }
+
+  ForeachAllocationSite(allocation_sites_list(),
+                        [&marked, flag, this](AllocationSite* site) {
+                          if (site->GetPretenureMode() == flag) {
+                            site->ResetPretenureDecision();
+                            site->set_deopt_dependent_code(true);
+                            marked = true;
+                            RemoveAllocationSitePretenuringFeedback(site);
+                            return;
+                          }
+                        });
   if (marked) isolate_->stack_guard()->RequestDeoptMarkedAllocationSites();
 }
 
@@ -3631,6 +3652,8 @@ bool Heap::InSpace(HeapObject* value, AllocationSpace space) {
       return map_space_->Contains(value);
     case LO_SPACE:
       return lo_space_->Contains(value);
+    case NEW_LO_SPACE:
+      return new_lo_space_->Contains(value);
     case RO_SPACE:
       return read_only_space_->Contains(value);
   }
@@ -3654,12 +3677,13 @@ bool Heap::InSpaceSlow(Address addr, AllocationSpace space) {
       return map_space_->ContainsSlow(addr);
     case LO_SPACE:
       return lo_space_->ContainsSlow(addr);
+    case NEW_LO_SPACE:
+      return new_lo_space_->ContainsSlow(addr);
     case RO_SPACE:
       return read_only_space_->ContainsSlow(addr);
   }
   UNREACHABLE();
 }
-
 
 bool Heap::IsValidAllocationSpace(AllocationSpace space) {
   switch (space) {
@@ -3668,6 +3692,7 @@ bool Heap::IsValidAllocationSpace(AllocationSpace space) {
     case CODE_SPACE:
     case MAP_SPACE:
     case LO_SPACE:
+    case NEW_LO_SPACE:
     case RO_SPACE:
       return true;
     default:
@@ -3729,18 +3754,18 @@ void Heap::Verify() {
   VerifySmisVisitor smis_visitor;
   IterateSmiRoots(&smis_visitor);
 
-  new_space_->Verify();
+  new_space_->Verify(isolate());
 
-  old_space_->Verify(&visitor);
-  map_space_->Verify(&visitor);
+  old_space_->Verify(isolate(), &visitor);
+  map_space_->Verify(isolate(), &visitor);
 
   VerifyPointersVisitor no_dirty_regions_visitor(this);
-  code_space_->Verify(&no_dirty_regions_visitor);
+  code_space_->Verify(isolate(), &no_dirty_regions_visitor);
 
-  lo_space_->Verify();
+  lo_space_->Verify(isolate());
 
   VerifyReadOnlyPointersVisitor read_only_visitor(this);
-  read_only_space_->Verify(&read_only_visitor);
+  read_only_space_->Verify(isolate(), &read_only_visitor);
 }
 
 class SlotVerifyingVisitor : public ObjectVisitor {
@@ -3879,10 +3904,9 @@ void Heap::VerifyCountersBeforeConcurrentSweeping() {
 void Heap::ZapFromSpace() {
   if (!new_space_->IsFromSpaceCommitted()) return;
   for (Page* page : PageRange(new_space_->from_space().first_page(), nullptr)) {
-    for (Address cursor = page->area_start(), limit = page->area_end();
-         cursor < limit; cursor += kPointerSize) {
-      Memory::Address_at(cursor) = static_cast<Address>(kFromSpaceZapValue);
-    }
+    memory_allocator()->ZapBlock(page->area_start(),
+                                 page->HighWaterMark() - page->area_start(),
+                                 ZapValue());
   }
 }
 
@@ -4308,14 +4332,19 @@ bool Heap::ShouldExpandOldGenerationOnSlowAllocation() {
 }
 
 Heap::HeapGrowingMode Heap::CurrentHeapGrowingMode() {
-  if (ShouldReduceMemory()) return HeapGrowingMode::kMinimal;
-
-  if (memory_reducer()->ShouldGrowHeapSlowly() ||
-      ShouldOptimizeForMemoryUsage()) {
-    return HeapGrowingMode::kConservative;
+  if (ShouldReduceMemory() || FLAG_stress_compaction) {
+    return Heap::HeapGrowingMode::kMinimal;
   }
 
-  return HeapGrowingMode::kDefault;
+  if (ShouldOptimizeForMemoryUsage()) {
+    return Heap::HeapGrowingMode::kConservative;
+  }
+
+  if (memory_reducer()->ShouldGrowHeapSlowly()) {
+    return Heap::HeapGrowingMode::kSlow;
+  }
+
+  return Heap::HeapGrowingMode::kDefault;
 }
 
 // This function returns either kNoLimit, kSoftLimit, or kHardLimit.
@@ -4572,6 +4601,7 @@ void Heap::SetUp() {
   space_[CODE_SPACE] = code_space_ = new CodeSpace(this);
   space_[MAP_SPACE] = map_space_ = new MapSpace(this);
   space_[LO_SPACE] = lo_space_ = new LargeObjectSpace(this);
+  space_[NEW_LO_SPACE] = new_lo_space_ = new NewLargeObjectSpace(this);
 
   // Set up the seed that is used to randomize the string hash function.
   DCHECK_EQ(Smi::kZero, hash_seed());
@@ -5314,10 +5344,9 @@ void Heap::ExternalStringTable::CleanUpNewSpaceStrings() {
     if (o->IsTheHole(isolate)) {
       continue;
     }
-    if (o->IsThinString()) {
-      o = ThinString::cast(o)->actual();
-      if (!o->IsExternalString()) continue;
-    }
+    // The real external string is already in one of these vectors and was or
+    // will be processed. Re-processing it will add a duplicate to the vector.
+    if (o->IsThinString()) continue;
     DCHECK(o->IsExternalString());
     if (heap_->InNewSpace(o)) {
       new_space_strings_[last++] = o;
@@ -5337,10 +5366,9 @@ void Heap::ExternalStringTable::CleanUpAll() {
     if (o->IsTheHole(isolate)) {
       continue;
     }
-    if (o->IsThinString()) {
-      o = ThinString::cast(o)->actual();
-      if (!o->IsExternalString()) continue;
-    }
+    // The real external string is already in one of these vectors and was or
+    // will be processed. Re-processing it will add a duplicate to the vector.
+    if (o->IsThinString()) continue;
     DCHECK(o->IsExternalString());
     DCHECK(!heap_->InNewSpace(o));
     old_space_strings_[last++] = o;
@@ -5508,6 +5536,8 @@ const char* AllocationSpaceName(AllocationSpace space) {
       return "MAP_SPACE";
     case LO_SPACE:
       return "LO_SPACE";
+    case NEW_LO_SPACE:
+      return "NEW_LO_SPACE";
     case RO_SPACE:
       return "RO_SPACE";
     default:
@@ -5581,6 +5611,7 @@ bool Heap::AllowedToBeMigrated(HeapObject* obj, AllocationSpace dst) {
       return dst == CODE_SPACE && type == CODE_TYPE;
     case MAP_SPACE:
     case LO_SPACE:
+    case NEW_LO_SPACE:
     case RO_SPACE:
       return false;
   }
@@ -5633,19 +5664,15 @@ Code* GcSafeCastToCode(Heap* heap, HeapObject* object, Address inner_pointer) {
 bool Heap::GcSafeCodeContains(HeapObject* code, Address addr) {
   Map* map = GcSafeMapOfCodeSpaceObject(code);
   DCHECK(map == code_map());
-#ifdef V8_EMBEDDED_BUILTINS
   if (InstructionStream::TryLookupCode(isolate(), addr) == code) return true;
-#endif
   Address start = code->address();
   Address end = code->address() + code->SizeFromMap(map);
   return start <= addr && addr < end;
 }
 
 Code* Heap::GcSafeFindCodeForInnerPointer(Address inner_pointer) {
-#ifdef V8_EMBEDDED_BUILTINS
   Code* code = InstructionStream::TryLookupCode(isolate(), inner_pointer);
   if (code != nullptr) return code;
-#endif
 
   // Check if the inner pointer points into a large object chunk.
   LargePage* large_page = lo_space()->FindPage(inner_pointer);

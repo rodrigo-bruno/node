@@ -7,6 +7,7 @@
 #endif  // V8_INTL_SUPPORT
 
 #include "src/objects/intl-objects.h"
+#include "src/objects/intl-objects-inl.h"
 
 #include <memory>
 
@@ -1080,8 +1081,8 @@ void V8BreakIterator::DeleteBreakIterator(
 }
 
 // Build the shortened locale; eg, convert xx_Yyyy_ZZ  to xx_ZZ.
-bool IntlUtil::RemoveLocaleScriptTag(const std::string& icu_locale,
-                                     std::string* locale_less_script) {
+bool Intl::RemoveLocaleScriptTag(const std::string& icu_locale,
+                                 std::string* locale_less_script) {
   icu::Locale new_locale = icu::Locale::createCanonical(icu_locale.c_str());
   const char* icu_script = new_locale.getScript();
   if (icu_script == NULL || strlen(icu_script) == 0) {
@@ -1097,7 +1098,7 @@ bool IntlUtil::RemoveLocaleScriptTag(const std::string& icu_locale,
   return true;
 }
 
-std::set<std::string> IntlUtil::GetAvailableLocales(const IcuService& service) {
+std::set<std::string> Intl::GetAvailableLocales(const IcuService& service) {
   const icu::Locale* icu_available_locales = nullptr;
   int32_t count = 0;
 
@@ -1142,20 +1143,98 @@ std::set<std::string> IntlUtil::GetAvailableLocales(const IcuService& service) {
     locales.insert(locale);
 
     std::string shortened_locale;
-    if (IntlUtil::RemoveLocaleScriptTag(icu_name, &shortened_locale)) {
-      error = U_ZERO_ERROR;
-      char bcp47_result[ULOC_FULLNAME_CAPACITY];
-      uloc_toLanguageTag(shortened_locale.c_str(), bcp47_result,
-                         ULOC_FULLNAME_CAPACITY, true, &error);
-      if (U_FAILURE(error) || error == U_STRING_NOT_TERMINATED_WARNING) {
-        // This shouldn't happen, but lets not break the user.
-        continue;
-      }
+    if (Intl::RemoveLocaleScriptTag(icu_name, &shortened_locale)) {
+      std::replace(shortened_locale.begin(), shortened_locale.end(), '_', '-');
       locales.insert(shortened_locale);
     }
   }
 
   return locales;
+}
+
+bool Intl::IsObjectOfType(Isolate* isolate, Handle<Object> input,
+                          Intl::Type expected_type) {
+  if (!input->IsJSObject()) return false;
+  Handle<JSObject> obj = Handle<JSObject>::cast(input);
+
+  Handle<Symbol> marker = isolate->factory()->intl_initialized_marker_symbol();
+  Handle<Object> tag = JSReceiver::GetDataProperty(obj, marker);
+
+  if (!tag->IsSmi()) return false;
+
+  Intl::Type type = Intl::TypeFromSmi(Smi::cast(*tag));
+  return type == expected_type;
+}
+
+namespace {
+
+// In ECMA 402 v1, Intl constructors supported a mode of operation
+// where calling them with an existing object as a receiver would
+// transform the receiver into the relevant Intl instance with all
+// internal slots. In ECMA 402 v2, this capability was removed, to
+// avoid adding internal slots on existing objects. In ECMA 402 v3,
+// the capability was re-added as "normative optional" in a mode
+// which chains the underlying Intl instance on any object, when the
+// constructor is called
+//
+// See ecma402/#legacy-constructor.
+MaybeHandle<Object> LegacyUnwrapReceiver(Isolate* isolate,
+                                         Handle<JSReceiver> receiver,
+                                         Handle<JSFunction> constructor,
+                                         Intl::Type type) {
+  bool has_initialized_slot = Intl::IsObjectOfType(isolate, receiver, type);
+
+  Handle<Object> obj_is_instance_of;
+  ASSIGN_RETURN_ON_EXCEPTION(isolate, obj_is_instance_of,
+                             Object::InstanceOf(isolate, receiver, constructor),
+                             Object);
+  bool is_instance_of = obj_is_instance_of->BooleanValue(isolate);
+
+  // 2. If receiver does not have an [[Initialized...]] internal slot
+  //    and ? InstanceofOperator(receiver, constructor) is true, then
+  if (!has_initialized_slot && is_instance_of) {
+    // 2. a. Let new_receiver be ? Get(receiver, %Intl%.[[FallbackSymbol]]).
+    Handle<Object> new_receiver;
+    Handle<Symbol> marker =
+        handle(isolate->heap()->intl_fallback_symbol(), isolate);
+    ASSIGN_RETURN_ON_EXCEPTION(
+        isolate, new_receiver,
+        JSReceiver::GetProperty(isolate, receiver, marker), Object);
+    return new_receiver;
+  }
+
+  return receiver;
+}
+
+}  // namespace
+
+MaybeHandle<JSReceiver> Intl::UnwrapReceiver(Isolate* isolate,
+                                             Handle<JSReceiver> receiver,
+                                             Handle<JSFunction> constructor,
+                                             Intl::Type type,
+                                             Handle<String> method_name,
+                                             bool check_legacy_constructor) {
+  Handle<Object> new_receiver = receiver;
+  if (check_legacy_constructor) {
+    ASSIGN_RETURN_ON_EXCEPTION(
+        isolate, new_receiver,
+        LegacyUnwrapReceiver(isolate, receiver, constructor, type), JSReceiver);
+  }
+
+  // 3. If Type(new_receiver) is not Object or nf does not have an
+  //    [[Initialized...]]  internal slot, then
+  if (!new_receiver->IsJSReceiver() ||
+      !Intl::IsObjectOfType(isolate, new_receiver, type)) {
+    // 3. a. Throw a TypeError exception.
+    THROW_NEW_ERROR(isolate,
+                    NewTypeError(MessageTemplate::kIncompatibleMethodReceiver,
+                                 method_name, receiver),
+                    JSReceiver);
+  }
+
+  // The above IsObjectOfType returns true only for JSObjects, which
+  // makes this cast safe.
+  return Handle<JSReceiver>::cast(new_receiver);
 }
 
 }  // namespace internal

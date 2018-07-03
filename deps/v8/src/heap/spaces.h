@@ -142,6 +142,12 @@ enum FreeMode { kLinkCategory, kDoNotLinkCategory };
 
 enum class SpaceAccountingMode { kSpaceAccounted, kSpaceUnaccounted };
 
+enum ExternalBackingStoreType {
+  kArrayBuffer,
+  kExternalString,
+  kNumTypes
+};
+
 enum RememberedSetType {
   OLD_TO_NEW,
   OLD_TO_OLD,
@@ -257,7 +263,7 @@ class MemoryChunk {
     IS_EXECUTABLE = 1u << 0,
     POINTERS_TO_HERE_ARE_INTERESTING = 1u << 1,
     POINTERS_FROM_HERE_ARE_INTERESTING = 1u << 2,
-    // A page in new space has one of the next to flags set.
+    // A page in new space has one of the next two flags set.
     IN_FROM_SPACE = 1u << 3,
     IN_TO_SPACE = 1u << 4,
     NEW_SPACE_BELOW_AGE_MARK = 1u << 5,
@@ -360,13 +366,15 @@ class MemoryChunk {
       + kIntptrSize       // std::atomic<intptr_t> live_byte_count_
       + kPointerSize * NUMBER_OF_REMEMBERED_SET_TYPES  // SlotSet* array
       + kPointerSize * NUMBER_OF_REMEMBERED_SET_TYPES  // TypedSlotSet* array
-      + kPointerSize      // InvalidatedSlots* invalidated_slots_
-      + kPointerSize      // SkipList* skip_list_
-      + kPointerSize      // AtomicValue high_water_mark_
-      + kPointerSize      // base::Mutex* mutex_
-      + kPointerSize      // base::AtomicWord concurrent_sweeping_
-      + kPointerSize      // base::Mutex* page_protection_change_mutex_
-      + kPointerSize      // unitptr_t write_unprotect_counter_
+      + kPointerSize  // InvalidatedSlots* invalidated_slots_
+      + kPointerSize  // SkipList* skip_list_
+      + kPointerSize  // AtomicValue high_water_mark_
+      + kPointerSize  // base::Mutex* mutex_
+      + kPointerSize  // base::AtomicWord concurrent_sweeping_
+      + kPointerSize  // base::Mutex* page_protection_change_mutex_
+      + kPointerSize  // unitptr_t write_unprotect_counter_
+      + kSizetSize * kNumTypes
+      // std::atomic<size_t> external_backing_store_bytes_
       + kSizetSize        // size_t allocated_bytes_
       + kSizetSize        // size_t wasted_memory_
       + kPointerSize * 2  // base::ListNode
@@ -407,7 +415,7 @@ class MemoryChunk {
     return reinterpret_cast<MemoryChunk*>(OffsetFrom(a) & ~kAlignmentMask);
   }
   // Only works if the object is in the first kPageSize of the MemoryChunk.
-  static MemoryChunk* FromHeapObject(HeapObject* o) {
+  static MemoryChunk* FromHeapObject(const HeapObject* o) {
     return reinterpret_cast<MemoryChunk*>(reinterpret_cast<Address>(o) &
                                           ~kAlignmentMask);
   }
@@ -499,10 +507,7 @@ class MemoryChunk {
   void RegisterObjectWithInvalidatedSlots(HeapObject* object, int size);
   InvalidatedSlots* invalidated_slots() { return invalidated_slots_; }
 
-  void AllocateLocalTracker();
   void ReleaseLocalTracker();
-  inline LocalArrayBufferTracker* local_tracker() { return local_tracker_; }
-  bool contains_array_buffers();
 
   void AllocateYoungGenerationBitmap();
   void ReleaseYoungGenerationBitmap();
@@ -530,6 +535,14 @@ class MemoryChunk {
     if (IsFlagSet(MemoryChunk::HAS_PROGRESS_BAR)) {
       set_progress_bar(0);
     }
+  }
+
+  void IncrementExternalBackingStoreBytes(ExternalBackingStoreType type,
+                                          size_t amount);
+  void DecrementExternalBackingStoreBytes(ExternalBackingStoreType type,
+                                          size_t amount);
+  size_t ExternalBackingStoreBytes(ExternalBackingStoreType type) {
+    return external_backing_store_bytes_[type];
   }
 
   inline uint32_t AddressToMarkbitIndex(Address addr) const {
@@ -687,6 +700,10 @@ class MemoryChunk {
   // Byte allocated on the page, which includes all objects on the page
   // and the linear allocation area.
   size_t allocated_bytes_;
+
+  // Tracks off-heap memory used by this memory chunk.
+  std::atomic<size_t> external_backing_store_bytes_[kNumTypes];
+
   // Freed memory that was not added to the free list.
   size_t wasted_memory_;
 
@@ -796,6 +813,10 @@ class Page : public MemoryChunk {
     DCHECK(SweepingDone());
   }
 
+  void AllocateLocalTracker();
+  inline LocalArrayBufferTracker* local_tracker() { return local_tracker_; }
+  bool contains_array_buffers();
+
   void ResetFreeListStatistics();
 
   size_t AvailableInFreeList();
@@ -887,15 +908,25 @@ class Space : public Malloced {
         heap_(heap),
         id_(id),
         committed_(0),
-        max_committed_(0),
-        external_backing_store_bytes_(0) {}
+        max_committed_(0) {
+    external_backing_store_bytes_ =
+        new std::atomic<size_t>[ExternalBackingStoreType::kNumTypes];
+    external_backing_store_bytes_[ExternalBackingStoreType::kArrayBuffer] = 0;
+    external_backing_store_bytes_[ExternalBackingStoreType::kExternalString] =
+        0;
+  }
 
-  virtual ~Space() {}
+  virtual ~Space() {
+    delete[] external_backing_store_bytes_;
+    external_backing_store_bytes_ = nullptr;
+  }
 
   Heap* heap() const { return heap_; }
 
   // Identity used in error reporting.
   AllocationSpace identity() { return id_; }
+
+  const char* name() { return AllocationSpaceName(id_); }
 
   V8_EXPORT_PRIVATE virtual void AddAllocationObserver(
       AllocationObserver* observer);
@@ -925,8 +956,9 @@ class Space : public Malloced {
   virtual size_t SizeOfObjects() { return Size(); }
 
   // Returns amount of off-heap memory in-use by objects in this Space.
-  virtual size_t ExternalBackingStoreBytes() const {
-    return external_backing_store_bytes_;
+  virtual size_t ExternalBackingStoreBytes(
+      ExternalBackingStoreType type) const {
+    return external_backing_store_bytes_[type];
   }
 
   // Approximate amount of physical memory committed for this space.
@@ -958,11 +990,14 @@ class Space : public Malloced {
     committed_ -= bytes;
   }
 
-  void IncrementExternalBackingStoreBytes(size_t amount) {
-    external_backing_store_bytes_ += amount;
+  void IncrementExternalBackingStoreBytes(ExternalBackingStoreType type,
+                                          size_t amount) {
+    external_backing_store_bytes_[type] += amount;
   }
-  void DecrementExternalBackingStoreBytes(size_t amount) {
-    external_backing_store_bytes_ -= amount;
+  void DecrementExternalBackingStoreBytes(ExternalBackingStoreType type,
+                                          size_t amount) {
+    DCHECK_GE(external_backing_store_bytes_[type], amount);
+    external_backing_store_bytes_[type] -= amount;
   }
 
   V8_EXPORT_PRIVATE void* GetRandomMmapAddr();
@@ -987,6 +1022,9 @@ class Space : public Malloced {
   // The List manages the pages that belong to the given space.
   base::List<MemoryChunk> memory_chunk_list_;
 
+  // Tracks off-heap memory used by this space.
+  std::atomic<size_t>* external_backing_store_bytes_;
+
  private:
   bool allocation_observers_paused_;
   Heap* heap_;
@@ -995,9 +1033,6 @@ class Space : public Malloced {
   // Keeps track of committed memory in a space.
   size_t committed_;
   size_t max_committed_;
-
-  // Tracks off-heap memory used by this space.
-  std::atomic<size_t> external_backing_store_bytes_;
 
   DISALLOW_COPY_AND_ASSIGN(Space);
 };
@@ -1379,9 +1414,9 @@ class V8_EXPORT_PRIVATE MemoryAllocator {
   // and false otherwise.
   bool UncommitBlock(Address start, size_t size);
 
-  // Zaps a contiguous block of memory [start..(start+size)[ thus
-  // filling it up with a recognizable non-nullptr bit pattern.
-  void ZapBlock(Address start, size_t size);
+  // Zaps a contiguous block of memory [start..(start+size)[ with
+  // a given zap value.
+  void ZapBlock(Address start, size_t size, uintptr_t zap_value);
 
   V8_WARN_UNUSED_RESULT bool CommitExecutableMemory(VirtualMemory* vm,
                                                     Address start,
@@ -1580,25 +1615,21 @@ class LinearAllocationArea {
     set_limit(limit);
   }
 
-  INLINE(void set_top(Address top)) {
+  V8_INLINE void set_top(Address top) {
     SLOW_DCHECK(top == kNullAddress || (top & kHeapObjectTagMask) == 0);
     top_ = top;
   }
 
-  INLINE(Address top()) const {
+  V8_INLINE Address top() const {
     SLOW_DCHECK(top_ == kNullAddress || (top_ & kHeapObjectTagMask) == 0);
     return top_;
   }
 
   Address* top_address() { return &top_; }
 
-  INLINE(void set_limit(Address limit)) {
-    limit_ = limit;
-  }
+  V8_INLINE void set_limit(Address limit) { limit_ = limit; }
 
-  INLINE(Address limit()) const {
-    return limit_;
-  }
+  V8_INLINE Address limit() const { return limit_; }
 
   Address* limit_address() { return &limit_; }
 
@@ -2174,7 +2205,7 @@ class V8_EXPORT_PRIVATE PagedSpace
 
 #ifdef VERIFY_HEAP
   // Verify integrity of this space.
-  virtual void Verify(ObjectVisitor* visitor);
+  virtual void Verify(Isolate* isolate, ObjectVisitor* visitor);
 
   void VerifyLiveBytes();
 
@@ -2590,9 +2621,10 @@ class NewSpace : public SpaceWithLinearArea {
     return Capacity() - Size();
   }
 
-  size_t ExternalBackingStoreBytes() const override {
-    DCHECK_EQ(0, from_space_.ExternalBackingStoreBytes());
-    return to_space_.ExternalBackingStoreBytes();
+  size_t ExternalBackingStoreBytes(
+      ExternalBackingStoreType type) const override {
+    DCHECK_EQ(0, from_space_.ExternalBackingStoreBytes(type));
+    return to_space_.ExternalBackingStoreBytes(type);
   }
 
   size_t AllocatedSinceLastGC() {
@@ -2663,14 +2695,14 @@ class NewSpace : public SpaceWithLinearArea {
   // Set the age mark in the active semispace.
   void set_age_mark(Address mark) { to_space_.set_age_mark(mark); }
 
-  V8_WARN_UNUSED_RESULT INLINE(AllocationResult AllocateRawAligned(
-      int size_in_bytes, AllocationAlignment alignment));
+  V8_WARN_UNUSED_RESULT V8_INLINE AllocationResult
+  AllocateRawAligned(int size_in_bytes, AllocationAlignment alignment);
 
-  V8_WARN_UNUSED_RESULT INLINE(
-      AllocationResult AllocateRawUnaligned(int size_in_bytes));
+  V8_WARN_UNUSED_RESULT V8_INLINE AllocationResult
+  AllocateRawUnaligned(int size_in_bytes);
 
-  V8_WARN_UNUSED_RESULT INLINE(AllocationResult AllocateRaw(
-      int size_in_bytes, AllocationAlignment alignment));
+  V8_WARN_UNUSED_RESULT V8_INLINE AllocationResult
+  AllocateRaw(int size_in_bytes, AllocationAlignment alignment);
 
   V8_WARN_UNUSED_RESULT inline AllocationResult AllocateRawSynchronized(
       int size_in_bytes, AllocationAlignment alignment);
@@ -2699,7 +2731,7 @@ class NewSpace : public SpaceWithLinearArea {
 
 #ifdef VERIFY_HEAP
   // Verify the active semispace.
-  virtual void Verify();
+  virtual void Verify(Isolate* isolate);
 #endif
 
 #ifdef DEBUG
@@ -2880,6 +2912,8 @@ class ReadOnlySpace : public PagedSpace {
 
   explicit ReadOnlySpace(Heap* heap);
 
+  bool writable() const { return !is_marked_read_only_; }
+
   void ClearStringPaddingIfNeeded();
   void MarkAsReadOnly();
 
@@ -2907,6 +2941,8 @@ class LargeObjectSpace : public Space {
   typedef LargePageIterator iterator;
 
   explicit LargeObjectSpace(Heap* heap);
+  LargeObjectSpace(Heap* heap, AllocationSpace id);
+
   ~LargeObjectSpace() override { TearDown(); }
 
   // Releases internal resources, frees objects in this space.
@@ -2978,7 +3014,7 @@ class LargeObjectSpace : public Space {
   base::Mutex* chunk_map_mutex() { return &chunk_map_mutex_; }
 
 #ifdef VERIFY_HEAP
-  virtual void Verify();
+  virtual void Verify(Isolate* isolate);
 #endif
 
 #ifdef DEBUG
@@ -3000,6 +3036,13 @@ class LargeObjectSpace : public Space {
   friend class LargeObjectIterator;
 };
 
+class NewLargeObjectSpace : public LargeObjectSpace {
+ public:
+  explicit NewLargeObjectSpace(Heap* heap);
+
+  // Available bytes for objects in this space.
+  size_t Available() override;
+};
 
 class LargeObjectIterator : public ObjectIterator {
  public:

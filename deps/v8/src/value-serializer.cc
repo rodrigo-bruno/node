@@ -356,8 +356,10 @@ Maybe<bool> ValueSerializer::WriteObject(Handle<Object> object) {
       WriteOddball(Oddball::cast(*object));
       return ThrowIfOutOfMemory();
     case HEAP_NUMBER_TYPE:
-    case MUTABLE_HEAP_NUMBER_TYPE:
       WriteHeapNumber(HeapNumber::cast(*object));
+      return ThrowIfOutOfMemory();
+    case MUTABLE_HEAP_NUMBER_TYPE:
+      WriteMutableHeapNumber(MutableHeapNumber::cast(*object));
       return ThrowIfOutOfMemory();
     case BIGINT_TYPE:
       WriteBigInt(BigInt::cast(*object));
@@ -425,13 +427,18 @@ void ValueSerializer::WriteHeapNumber(HeapNumber* number) {
   WriteDouble(number->value());
 }
 
+void ValueSerializer::WriteMutableHeapNumber(MutableHeapNumber* number) {
+  WriteTag(SerializationTag::kDouble);
+  WriteDouble(number->value());
+}
+
 void ValueSerializer::WriteBigInt(BigInt* bigint) {
   WriteTag(SerializationTag::kBigInt);
   WriteBigIntContents(bigint);
 }
 
 void ValueSerializer::WriteString(Handle<String> string) {
-  string = String::Flatten(string);
+  string = String::Flatten(isolate_, string);
   DisallowHeapAllocation no_gc;
   String::FlatContent flat = string->GetFlatContent();
   DCHECK(flat.IsFlat());
@@ -736,7 +743,7 @@ void ValueSerializer::WriteJSRegExp(JSRegExp* regexp) {
 
 Maybe<bool> ValueSerializer::WriteJSMap(Handle<JSMap> map) {
   // First copy the key-value pairs, since getters could mutate them.
-  Handle<OrderedHashMap> table(OrderedHashMap::cast(map->table()));
+  Handle<OrderedHashMap> table(OrderedHashMap::cast(map->table()), isolate_);
   int length = table->NumberOfElements() * 2;
   Handle<FixedArray> entries = isolate_->factory()->NewFixedArray(length);
   {
@@ -767,7 +774,7 @@ Maybe<bool> ValueSerializer::WriteJSMap(Handle<JSMap> map) {
 
 Maybe<bool> ValueSerializer::WriteJSSet(Handle<JSSet> set) {
   // First copy the element pointers, since getters could mutate them.
-  Handle<OrderedHashSet> table(OrderedHashSet::cast(set->table()));
+  Handle<OrderedHashSet> table(OrderedHashSet::cast(set->table()), isolate_);
   int length = table->NumberOfElements();
   Handle<FixedArray> entries = isolate_->factory()->NewFixedArray(length);
   {
@@ -879,16 +886,14 @@ Maybe<bool> ValueSerializer::WriteWasmModule(Handle<WasmModuleObject> object) {
   WriteTag(SerializationTag::kWasmModule);
   WriteRawBytes(&encoding_tag, sizeof(encoding_tag));
 
-  Handle<String> wire_bytes(object->module_bytes(), isolate_);
-  int wire_bytes_length = wire_bytes->length();
-  WriteVarint<uint32_t>(wire_bytes_length);
+  wasm::NativeModule* native_module = object->native_module();
+  Vector<const uint8_t> wire_bytes = native_module->wire_bytes();
+  WriteVarint<uint32_t>(static_cast<uint32_t>(wire_bytes.size()));
   uint8_t* destination;
-  if (ReserveRawBytes(wire_bytes_length).To(&destination)) {
-    String::WriteToFlat(*wire_bytes, destination, 0, wire_bytes_length);
+  if (ReserveRawBytes(wire_bytes.size()).To(&destination)) {
+    memcpy(destination, wire_bytes.start(), wire_bytes.size());
   }
 
-  wasm::NativeModule* native_module =
-      object->compiled_module()->GetNativeModule();
   size_t module_size =
       wasm::GetSerializedNativeModuleSize(isolate_, native_module);
   CHECK_GE(std::numeric_limits<uint32_t>::max(), module_size);
@@ -1945,8 +1950,9 @@ Maybe<uint32_t> ValueDeserializer::ReadJSObjectProperties(
                    ->NowContains(value)) {
             Handle<FieldType> value_type =
                 value->OptimalType(isolate_, expected_representation);
-            Map::GeneralizeField(target, descriptor, details.constness(),
-                                 expected_representation, value_type);
+            Map::GeneralizeField(isolate_, target, descriptor,
+                                 details.constness(), expected_representation,
+                                 value_type);
           }
           DCHECK(target->instance_descriptors()
                      ->GetFieldType(descriptor)

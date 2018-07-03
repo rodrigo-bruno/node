@@ -92,7 +92,7 @@ class ImplementationVisitor : public FileVisitor {
   }
   void Visit(TypeDeclaration* decl) {}
   void Visit(TypeAliasDeclaration* decl) {}
-  void Visit(ConstDeclaration* decl) {}
+  void Visit(ExternConstDeclaration* decl) {}
   void Visit(StandardDeclaration* decl);
   void Visit(GenericDeclaration* decl) {}
   void Visit(SpecializationDeclaration* decl);
@@ -172,6 +172,8 @@ class ImplementationVisitor : public FileVisitor {
     bool new_lines_;
     ImplementationVisitor* visitor_;
   };
+
+  Callable* LookupCall(const std::string& name, const Arguments& arguments);
 
   void GenerateChangedVarsFromControlSplit(AstNode* node);
 

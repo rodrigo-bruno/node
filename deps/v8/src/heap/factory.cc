@@ -23,6 +23,7 @@
 #include "src/objects/frame-array-inl.h"
 #include "src/objects/js-collection-inl.h"
 #include "src/objects/js-regexp-inl.h"
+#include "src/objects/literal-objects-inl.h"
 #include "src/objects/microtask-inl.h"
 #include "src/objects/module-inl.h"
 #include "src/objects/promise-inl.h"
@@ -68,7 +69,9 @@ void InitializeCode(Heap* heap, Handle<Code> code, int object_size,
 
   code->set_raw_instruction_size(desc.instr_size);
   code->set_relocation_info(*reloc_info);
-  code->initialize_flags(kind, has_unwinding_info, is_turbofanned, stack_slots);
+  const bool is_off_heap_trampoline = false;
+  code->initialize_flags(kind, has_unwinding_info, is_turbofanned, stack_slots,
+                         is_off_heap_trampoline);
   code->set_safepoint_table_offset(safepoint_table_offset);
   code->set_handler_table_offset(handler_table_offset);
   code->set_code_data_container(*data_container);
@@ -83,10 +86,10 @@ void InitializeCode(Heap* heap, Handle<Code> code, int object_size,
   if (!self_ref.is_null()) {
     DCHECK(self_ref->IsOddball());
     DCHECK(Oddball::cast(*self_ref)->kind() == Oddball::kSelfReferenceMarker);
-#ifdef V8_EMBEDDED_BUILTINS
-    auto builder = code->GetIsolate()->builtins_constants_table_builder();
-    if (builder != nullptr) builder->PatchSelfReference(self_ref, code);
-#endif  // V8_EMBEDDED_BUILTINS
+    if (FLAG_embedded_builtins) {
+      auto builder = heap->isolate()->builtins_constants_table_builder();
+      if (builder != nullptr) builder->PatchSelfReference(self_ref, code);
+    }
     *(self_ref.location()) = *code;
   }
 
@@ -100,7 +103,7 @@ void InitializeCode(Heap* heap, Handle<Code> code, int object_size,
   code->clear_padding();
 
 #ifdef VERIFY_HEAP
-  if (FLAG_verify_heap) code->ObjectVerify();
+  if (FLAG_verify_heap) code->ObjectVerify(heap->isolate());
 #endif
 }
 
@@ -140,7 +143,6 @@ void Factory::InitializeAllocationMemento(AllocationMemento* memento,
                                           AllocationSite* allocation_site) {
   memento->set_map_after_allocation(*allocation_memento_map(),
                                     SKIP_WRITE_BARRIER);
-  DCHECK(allocation_site->map() == *allocation_site_map());
   memento->set_allocation_site(allocation_site, SKIP_WRITE_BARRIER);
   if (FLAG_allocation_site_pretenuring) {
     allocation_site->IncrementMementoCreateCount();
@@ -240,6 +242,27 @@ Handle<ConstantElementsPair> Factory::NewConstantElementsPair(
       Handle<ConstantElementsPair>::cast(NewStruct(TUPLE2_TYPE, TENURED));
   result->set_elements_kind(elements_kind);
   result->set_constant_values(*constant_values);
+  return result;
+}
+
+Handle<CompileTimeValue> Factory::NewCompileTimeValue(Expression* expression) {
+  DCHECK(expression->IsCompileTimeValue());
+  Handle<CompileTimeValue> result =
+      Handle<CompileTimeValue>::cast(NewStruct(TUPLE2_TYPE, TENURED));
+
+  if (expression->IsObjectLiteral()) {
+    ObjectLiteral* object_literal = expression->AsObjectLiteral();
+    DCHECK(object_literal->is_simple());
+    int literalTypeFlag = object_literal->EncodeLiteralType();
+    DCHECK_NE(CompileTimeValue::kArrayLiteralFlag, literalTypeFlag);
+    result->set_literal_type_flag(literalTypeFlag);
+    result->set_constant_elements(*object_literal->constant_properties());
+  } else {
+    ArrayLiteral* array_literal = expression->AsArrayLiteral();
+    DCHECK(array_literal->is_simple());
+    result->set_literal_type_flag(CompileTimeValue::kArrayLiteralFlag);
+    result->set_constant_elements(*array_literal->constant_elements());
+  }
   return result;
 }
 
@@ -1164,11 +1187,11 @@ Handle<String> Factory::NewSurrogatePairString(uint16_t lead, uint16_t trail) {
 Handle<String> Factory::NewProperSubString(Handle<String> str, int begin,
                                            int end) {
 #if VERIFY_HEAP
-  if (FLAG_verify_heap) str->StringVerify();
+  if (FLAG_verify_heap) str->StringVerify(isolate());
 #endif
   DCHECK(begin > 0 || end < str->length());
 
-  str = String::Flatten(str);
+  str = String::Flatten(isolate(), str);
 
   int length = end - begin;
   if (length <= 0) return empty_string();
@@ -1302,7 +1325,7 @@ Handle<ExternalOneByteString> Factory::NewNativeSourceString(
 Handle<JSStringIterator> Factory::NewJSStringIterator(Handle<String> string) {
   Handle<Map> map(isolate()->native_context()->string_iterator_map(),
                   isolate());
-  Handle<String> flat_string = String::Flatten(string);
+  Handle<String> flat_string = String::Flatten(isolate(), string);
   Handle<JSStringIterator> iterator =
       Handle<JSStringIterator>::cast(NewJSObjectFromMap(map));
   iterator->set_string(*flat_string);
@@ -1514,13 +1537,18 @@ Handle<AccessorInfo> Factory::NewAccessorInfo() {
 }
 
 Handle<Script> Factory::NewScript(Handle<String> source, PretenureFlag tenure) {
+  return NewScriptWithId(source, isolate()->heap()->NextScriptId(), tenure);
+}
+
+Handle<Script> Factory::NewScriptWithId(Handle<String> source, int script_id,
+                                        PretenureFlag tenure) {
   DCHECK(tenure == TENURED || tenure == TENURED_READ_ONLY);
   // Create and initialize script object.
   Heap* heap = isolate()->heap();
   Handle<Script> script = Handle<Script>::cast(NewStruct(SCRIPT_TYPE, tenure));
   script->set_source(*source);
   script->set_name(heap->undefined_value());
-  script->set_id(isolate()->heap()->NextScriptId());
+  script->set_id(script_id);
   script->set_line_offset(0);
   script->set_column_offset(0);
   script->set_context_data(heap->undefined_value());
@@ -1533,7 +1561,9 @@ Handle<Script> Factory::NewScript(Handle<String> source, PretenureFlag tenure) {
                                     SKIP_WRITE_BARRIER);
   script->set_flags(0);
   script->set_host_defined_options(*empty_fixed_array());
-  heap->set_script_list(*FixedArrayOfWeakCells::Add(script_list(), script));
+  heap->set_script_list(
+      *FixedArrayOfWeakCells::Add(isolate(), script_list(), script));
+  LOG(isolate(), ScriptEvent(Logger::ScriptEventType::kCreate, script_id));
   return script;
 }
 
@@ -1751,15 +1781,18 @@ Handle<TransitionArray> Factory::NewTransitionArray(int number_of_transitions,
   return array;
 }
 
-Handle<AllocationSite> Factory::NewAllocationSite() {
-  Handle<Map> map = allocation_site_map();
+Handle<AllocationSite> Factory::NewAllocationSite(bool with_weak_next) {
+  Handle<Map> map = with_weak_next ? allocation_site_map()
+                                   : allocation_site_without_weaknext_map();
   Handle<AllocationSite> site(AllocationSite::cast(New(map, TENURED)),
                               isolate());
   site->Initialize();
 
-  // Link the site
-  site->set_weak_next(isolate()->heap()->allocation_sites_list());
-  isolate()->heap()->set_allocation_sites_list(*site);
+  if (with_weak_next) {
+    // Link the site
+    site->set_weak_next(isolate()->heap()->allocation_sites_list());
+    isolate()->heap()->set_allocation_sites_list(*site);
+  }
   return site;
 }
 
@@ -2101,16 +2134,14 @@ Handle<Object> Factory::NewNumber(double value, PretenureFlag pretenure) {
   if (DoubleToSmiInteger(value, &int_value)) {
     return handle(Smi::FromInt(int_value), isolate());
   }
-
-  // Materialize the value in the heap.
-  return NewHeapNumber(value, IMMUTABLE, pretenure);
+  return NewHeapNumber(value, pretenure);
 }
 
 Handle<Object> Factory::NewNumberFromInt(int32_t value,
                                          PretenureFlag pretenure) {
   if (Smi::IsValid(value)) return handle(Smi::FromInt(value), isolate());
   // Bypass NewNumber to avoid various redundant checks.
-  return NewHeapNumber(FastI2D(value), IMMUTABLE, pretenure);
+  return NewHeapNumber(FastI2D(value), pretenure);
 }
 
 Handle<Object> Factory::NewNumberFromUint(uint32_t value,
@@ -2119,16 +2150,24 @@ Handle<Object> Factory::NewNumberFromUint(uint32_t value,
   if (int32v >= 0 && Smi::IsValid(int32v)) {
     return handle(Smi::FromInt(int32v), isolate());
   }
-  return NewHeapNumber(FastUI2D(value), IMMUTABLE, pretenure);
+  return NewHeapNumber(FastUI2D(value), pretenure);
 }
 
-Handle<HeapNumber> Factory::NewHeapNumber(MutableMode mode,
-                                          PretenureFlag pretenure) {
+Handle<HeapNumber> Factory::NewHeapNumber(PretenureFlag pretenure) {
   STATIC_ASSERT(HeapNumber::kSize <= kMaxRegularHeapObjectSize);
-  Map* map = mode == MUTABLE ? *mutable_heap_number_map() : *heap_number_map();
+  Map* map = *heap_number_map();
   HeapObject* result = AllocateRawWithImmortalMap(HeapNumber::kSize, pretenure,
                                                   map, kDoubleUnaligned);
   return handle(HeapNumber::cast(result), isolate());
+}
+
+Handle<MutableHeapNumber> Factory::NewMutableHeapNumber(
+    PretenureFlag pretenure) {
+  STATIC_ASSERT(HeapNumber::kSize <= kMaxRegularHeapObjectSize);
+  Map* map = *mutable_heap_number_map();
+  HeapObject* result = AllocateRawWithImmortalMap(
+      MutableHeapNumber::kSize, pretenure, map, kDoubleUnaligned);
+  return handle(MutableHeapNumber::cast(result), isolate());
 }
 
 Handle<FreshlyAllocatedBigInt> Factory::NewBigInt(int length,
@@ -2578,13 +2617,12 @@ Handle<Code> Factory::NewCodeForDeserialization(uint32_t size) {
   return handle(Code::cast(result), isolate());
 }
 
-#ifdef V8_EMBEDDED_BUILTINS
 Handle<Code> Factory::NewOffHeapTrampolineFor(Handle<Code> code,
                                               Address off_heap_entry) {
-  DCHECK(isolate()->serializer_enabled());
-  DCHECK_NOT_NULL(isolate()->embedded_blob());
-  DCHECK_NE(0, isolate()->embedded_blob_size());
-  DCHECK(Builtins::IsEmbeddedBuiltin(*code));
+  CHECK(isolate()->serializer_enabled());
+  CHECK_NOT_NULL(isolate()->embedded_blob());
+  CHECK_NE(0, isolate()->embedded_blob_size());
+  CHECK(Builtins::IsIsolateIndependentBuiltin(*code));
 
   Handle<Code> result =
       Builtins::GenerateOffHeapTrampolineFor(isolate(), off_heap_entry);
@@ -2592,9 +2630,11 @@ Handle<Code> Factory::NewOffHeapTrampolineFor(Handle<Code> code,
   // The trampoline code object must inherit specific flags from the original
   // builtin (e.g. the safepoint-table offset). We set them manually here.
 
+  const bool set_is_off_heap_trampoline = true;
   const int stack_slots = code->has_safepoint_info() ? code->stack_slots() : 0;
   result->initialize_flags(code->kind(), code->has_unwinding_info(),
-                           code->is_turbofanned(), stack_slots);
+                           code->is_turbofanned(), stack_slots,
+                           set_is_off_heap_trampoline);
   result->set_builtin_index(code->builtin_index());
   result->set_handler_table_offset(code->handler_table_offset());
   result->code_data_container()->set_kind_specific_flags(
@@ -2606,7 +2646,6 @@ Handle<Code> Factory::NewOffHeapTrampolineFor(Handle<Code> code,
 
   return result;
 }
-#endif
 
 Handle<Code> Factory::CopyCode(Handle<Code> code) {
   Handle<CodeDataContainer> data_container =
@@ -2633,7 +2672,7 @@ Handle<Code> Factory::CopyCode(Handle<Code> code) {
   heap->RecordWritesIntoCode(*new_code);
 
 #ifdef VERIFY_HEAP
-  if (FLAG_verify_heap) new_code->ObjectVerify();
+  if (FLAG_verify_heap) new_code->ObjectVerify(isolate());
 #endif
   DCHECK(IsAligned(new_code->address(), kCodeAlignment));
   DCHECK(
@@ -2677,7 +2716,7 @@ Handle<JSObject> Factory::NewJSObjectWithNullProto(PretenureFlag pretenure) {
       NewJSObject(isolate()->object_function(), pretenure);
   Handle<Map> new_map = Map::Copy(
       isolate(), Handle<Map>(result->map(), isolate()), "ObjectWithNullProto");
-  Map::SetPrototype(new_map, null_value());
+  Map::SetPrototype(isolate(), new_map, null_value());
   JSObject::MigrateToMap(result, new_map);
   return result;
 }
@@ -2730,7 +2769,7 @@ Handle<JSGlobalObject> Factory::NewJSGlobalObject(
   InitializeJSObjectFromMap(global, dictionary, map);
 
   // Create a new map for the global object.
-  Handle<Map> new_map = Map::CopyDropDescriptors(map);
+  Handle<Map> new_map = Map::CopyDropDescriptors(isolate(), map);
   new_map->set_may_have_interesting_symbols(true);
   new_map->set_is_dictionary_map(true);
 
@@ -2781,7 +2820,7 @@ void Factory::InitializeJSObjectBody(Handle<JSObject> obj, Handle<Map> map,
   }
   obj->InitializeBody(*map, start_offset, *undefined_value(), filler);
   if (in_progress) {
-    map->FindRootMap()->InobjectSlackTrackingStep();
+    map->FindRootMap(isolate())->InobjectSlackTrackingStep(isolate());
   }
 }
 
@@ -3372,7 +3411,7 @@ Handle<SharedFunctionInfo> Factory::NewSharedFunctionInfo(
   Handle<String> shared_name;
   bool has_shared_name = maybe_name.ToHandle(&shared_name);
   if (has_shared_name) {
-    shared_name = String::Flatten(shared_name, TENURED);
+    shared_name = String::Flatten(isolate(), shared_name, TENURED);
   }
 
   Handle<Map> map = shared_function_info_map();
@@ -3410,8 +3449,8 @@ Handle<SharedFunctionInfo> Factory::NewSharedFunctionInfo(
           *empty_feedback_metadata(), SKIP_WRITE_BARRIER);
     }
     share->set_script(*undefined_value(), SKIP_WRITE_BARRIER);
-    share->set_debug_info(Smi::kZero, SKIP_WRITE_BARRIER);
-    share->set_function_identifier(*undefined_value(), SKIP_WRITE_BARRIER);
+    share->set_function_identifier_or_debug_info(*undefined_value(),
+                                                 SKIP_WRITE_BARRIER);
     share->set_function_literal_id(FunctionLiteral::kIdTypeInvalid);
 #if V8_SFI_HAS_UNIQUE_ID
     share->set_unique_id(isolate()->GetNextUniqueSharedFunctionInfoId());
@@ -3432,13 +3471,12 @@ Handle<SharedFunctionInfo> Factory::NewSharedFunctionInfo(
     share->clear_padding();
   }
   // Link into the list.
-  Handle<Object> new_noscript_list =
-      FixedArrayOfWeakCells::Add(noscript_shared_function_infos(), share);
+  Handle<Object> new_noscript_list = FixedArrayOfWeakCells::Add(
+      isolate(), noscript_shared_function_infos(), share);
   isolate()->heap()->set_noscript_shared_function_infos(*new_noscript_list);
 
-  DCHECK_EQ(SharedFunctionInfo::kNoDebuggingId, share->debugging_id());
 #ifdef VERIFY_HEAP
-  share->SharedFunctionInfoVerify();
+  share->SharedFunctionInfoVerify(isolate());
 #endif
   return share;
 }
@@ -3515,12 +3553,16 @@ Handle<DebugInfo> Factory::NewDebugInfo(Handle<SharedFunctionInfo> shared) {
       Handle<DebugInfo>::cast(NewStruct(DEBUG_INFO_TYPE, TENURED));
   debug_info->set_flags(DebugInfo::kNone);
   debug_info->set_shared(*shared);
-  debug_info->set_debugger_hints(shared->debugger_hints());
-  debug_info->set_debug_bytecode_array(heap->undefined_value());
+  debug_info->set_debugger_hints(0);
+  DCHECK_EQ(DebugInfo::kNoDebuggingId, debug_info->debugging_id());
+  DCHECK(!shared->HasDebugInfo());
+  debug_info->set_function_identifier(
+      shared->function_identifier_or_debug_info());
+  debug_info->set_original_bytecode_array(heap->undefined_value());
   debug_info->set_break_points(heap->empty_fixed_array());
 
   // Link debug info to function.
-  shared->set_debug_info(*debug_info);
+  shared->SetDebugInfo(*debug_info);
 
   return debug_info;
 }
@@ -3740,9 +3782,11 @@ Handle<RegExpMatchInfo> Factory::NewRegExpMatchInfo() {
 }
 
 Handle<Object> Factory::GlobalConstantFor(Handle<Name> name) {
-  if (Name::Equals(name, undefined_string())) return undefined_value();
-  if (Name::Equals(name, NaN_string())) return nan_value();
-  if (Name::Equals(name, Infinity_string())) return infinity_value();
+  if (Name::Equals(isolate(), name, undefined_string())) {
+    return undefined_value();
+  }
+  if (Name::Equals(isolate(), name, NaN_string())) return nan_value();
+  if (Name::Equals(isolate(), name, Infinity_string())) return infinity_value();
   return Handle<Object>::null();
 }
 
@@ -3779,7 +3823,7 @@ Handle<Map> Factory::CreateSloppyFunctionMap(
   map->set_is_callable(true);
   Handle<JSFunction> empty_function;
   if (maybe_empty_function.ToHandle(&empty_function)) {
-    Map::SetPrototype(map, empty_function);
+    Map::SetPrototype(isolate(), map, empty_function);
   }
 
   //
@@ -3856,7 +3900,7 @@ Handle<Map> Factory::CreateStrictFunctionMap(
   map->set_has_prototype_slot(has_prototype);
   map->set_is_constructor(has_prototype);
   map->set_is_callable(true);
-  Map::SetPrototype(map, empty_function);
+  Map::SetPrototype(isolate(), map, empty_function);
 
   //
   // Setup descriptors array.
@@ -3921,7 +3965,7 @@ Handle<Map> Factory::CreateClassFunctionMap(Handle<JSFunction> empty_function) {
   map->set_is_constructor(true);
   map->set_is_prototype_map(true);
   map->set_is_callable(true);
-  Map::SetPrototype(map, empty_function);
+  Map::SetPrototype(isolate(), map, empty_function);
 
   //
   // Setup descriptors array.

@@ -25,9 +25,10 @@
 namespace v8 {
 namespace internal {
 
-MacroAssembler::MacroAssembler(Isolate* isolate, void* buffer, int size,
+MacroAssembler::MacroAssembler(Isolate* isolate, const Options& options,
+                               void* buffer, int size,
                                CodeObjectRequired create_code_object)
-    : TurboAssembler(isolate, buffer, size, create_code_object) {
+    : TurboAssembler(isolate, options, buffer, size, create_code_object) {
   if (create_code_object == CodeObjectRequired::kYes) {
     // Unlike TurboAssembler, which can be used off the main thread and may not
     // allocate, macro assembler creates its own copy of the self-reference
@@ -126,14 +127,14 @@ int TurboAssembler::PopCallerSaved(SaveFPRegsMode fp_mode, Register exclusion1,
 }
 
 void TurboAssembler::LoadRoot(Register destination, Heap::RootListIndex index) {
-  lw(destination, MemOperand(kRootRegister, index << kPointerSizeLog2));
+  lw(destination, MemOperand(kRootRegister, RootRegisterOffset(index)));
 }
 
 void TurboAssembler::LoadRoot(Register destination, Heap::RootListIndex index,
                               Condition cond, Register src1,
                               const Operand& src2) {
   Branch(2, NegateCondition(cond), src1, src2);
-  lw(destination, MemOperand(kRootRegister, index << kPointerSizeLog2));
+  lw(destination, MemOperand(kRootRegister, RootRegisterOffset(index)));
 }
 
 
@@ -972,71 +973,66 @@ void TurboAssembler::Bnvc(Register rs, Register rt, Label* L) {
 // Word Swap Byte
 void TurboAssembler::ByteSwapSigned(Register dest, Register src,
                                     int operand_size) {
-  DCHECK(operand_size == 1 || operand_size == 2 || operand_size == 4);
-
-  Register input = src;
-  if (operand_size == 2) {
-    input = dest;
-    Seh(dest, src);
-  } else if (operand_size == 1) {
-    input = dest;
-    Seb(dest, src);
-  }
-  // No need to do any preparation if operand_size is 4
+  DCHECK(operand_size == 2 || operand_size == 4);
 
   if (IsMipsArchVariant(kMips32r2) || IsMipsArchVariant(kMips32r6)) {
-    wsbh(dest, input);
-    rotr(dest, dest, 16);
+    if (operand_size == 2) {
+      wsbh(dest, src);
+      seh(dest, dest);
+    } else {
+      wsbh(dest, src);
+      rotr(dest, dest, 16);
+    }
   } else if (IsMipsArchVariant(kMips32r1) || IsMipsArchVariant(kLoongson)) {
-    Register tmp = at;
-    Register tmp2 = t8;
-    DCHECK(dest != tmp && dest != tmp2);
-    DCHECK(src != tmp && src != tmp2);
+    if (operand_size == 2) {
+      DCHECK(src != at && dest != at);
+      srl(at, src, 8);
+      andi(at, at, 0xFF);
+      sll(dest, src, 8);
+      or_(dest, dest, at);
 
-    andi(tmp2, input, 0xFF);
-    sll(tmp, tmp2, 24);
+      // Sign-extension
+      sll(dest, dest, 16);
+      sra(dest, dest, 16);
+    } else {
+      Register tmp = at;
+      Register tmp2 = t8;
+      DCHECK(dest != tmp && dest != tmp2);
+      DCHECK(src != tmp && src != tmp2);
 
-    andi(tmp2, input, 0xFF00);
-    sll(tmp2, tmp2, 8);
-    or_(tmp, tmp, tmp2);
+      andi(tmp2, src, 0xFF);
+      sll(tmp, tmp2, 24);
 
-    srl(tmp2, input, 8);
-    andi(tmp2, tmp2, 0xFF00);
-    or_(tmp, tmp, tmp2);
+      andi(tmp2, src, 0xFF00);
+      sll(tmp2, tmp2, 8);
+      or_(tmp, tmp, tmp2);
 
-    srl(tmp2, input, 24);
-    or_(dest, tmp, tmp2);
+      srl(tmp2, src, 8);
+      andi(tmp2, tmp2, 0xFF00);
+      or_(tmp, tmp, tmp2);
+
+      srl(tmp2, src, 24);
+      or_(dest, tmp, tmp2);
+    }
   }
 }
 
 void TurboAssembler::ByteSwapUnsigned(Register dest, Register src,
                                       int operand_size) {
-  DCHECK(operand_size == 1 || operand_size == 2);
+  DCHECK_EQ(operand_size, 2);
 
   if (IsMipsArchVariant(kMips32r2) || IsMipsArchVariant(kMips32r6)) {
-    Register input = src;
-    if (operand_size == 1) {
-      input = dest;
-      andi(dest, src, 0xFF);
-    } else {
-      input = dest;
-      andi(dest, src, 0xFFFF);
-    }
-    // No need to do any preparation if operand_size is 4
-
-    wsbh(dest, input);
-    rotr(dest, dest, 16);
+    wsbh(dest, src);
+    andi(dest, dest, 0xFFFF);
   } else if (IsMipsArchVariant(kMips32r1) || IsMipsArchVariant(kLoongson)) {
-    if (operand_size == 1) {
-      sll(dest, src, 24);
-    } else {
-      Register tmp = at;
+    DCHECK(src != at && dest != at);
+    srl(at, src, 8);
+    andi(at, at, 0xFF);
+    sll(dest, src, 8);
+    or_(dest, dest, at);
 
-      andi(tmp, src, 0xFF00);
-      sll(dest, src, 24);
-      sll(tmp, tmp, 8);
-      or_(dest, tmp, dest);
-    }
+    // Zero-extension
+    andi(dest, dest, 0xFFFF);
   }
 }
 
@@ -1321,22 +1317,22 @@ void TurboAssembler::Sc(Register rd, const MemOperand& rs) {
 }
 
 void TurboAssembler::li(Register dst, Handle<HeapObject> value, LiFlags mode) {
-#ifdef V8_EMBEDDED_BUILTINS
-  if (root_array_available_ && isolate()->ShouldLoadConstantsFromRootList()) {
-    IndirectLoadConstant(dst, value);
-    return;
+  if (FLAG_embedded_builtins) {
+    if (root_array_available_ && options().isolate_independent_code) {
+      IndirectLoadConstant(dst, value);
+      return;
+    }
   }
-#endif  // V8_EMBEDDED_BUILTINS
   li(dst, Operand(value), mode);
 }
 
 void TurboAssembler::li(Register dst, ExternalReference value, LiFlags mode) {
-#ifdef V8_EMBEDDED_BUILTINS
-  if (root_array_available_ && isolate()->ShouldLoadConstantsFromRootList()) {
-    IndirectLoadExternalReference(dst, value);
-    return;
+  if (FLAG_embedded_builtins) {
+    if (root_array_available_ && options().isolate_independent_code) {
+      IndirectLoadExternalReference(dst, value);
+      return;
+    }
   }
-#endif  // V8_EMBEDDED_BUILTINS
   li(dst, Operand(value), mode);
 }
 
@@ -3602,7 +3598,6 @@ bool TurboAssembler::BranchAndLinkShortCheck(int32_t offset, Label* L,
   return false;
 }
 
-#ifdef V8_EMBEDDED_BUILTINS
 void TurboAssembler::LoadFromConstantsTable(Register destination,
                                             int constant_index) {
   DCHECK(isolate()->heap()->RootCanBeTreatedAsConstant(
@@ -3613,20 +3608,8 @@ void TurboAssembler::LoadFromConstantsTable(Register destination,
                      FixedArray::kHeaderSize + constant_index * kPointerSize));
 }
 
-void TurboAssembler::LoadExternalReference(Register destination,
-                                           int reference_index) {
-  int32_t roots_to_external_reference_offset =
-      Heap::roots_to_external_reference_table_offset() +
-      ExternalReferenceTable::OffsetOfEntry(reference_index);
-  lw(destination,
-     MemOperand(kRootRegister, roots_to_external_reference_offset));
-}
-
-void TurboAssembler::LoadBuiltin(Register destination, int builtin_index) {
-  DCHECK(Builtins::IsBuiltinId(builtin_index));
-  int32_t roots_to_builtins_offset =
-      Heap::roots_to_builtins_offset() + builtin_index * kPointerSize;
-  lw(destination, MemOperand(kRootRegister, roots_to_builtins_offset));
+void TurboAssembler::LoadRootRelative(Register destination, int32_t offset) {
+  lw(destination, MemOperand(kRootRegister, offset));
 }
 
 void TurboAssembler::LoadRootRegisterOffset(Register destination,
@@ -3637,7 +3620,6 @@ void TurboAssembler::LoadRootRegisterOffset(Register destination,
     Addu(destination, kRootRegister, offset);
   }
 }
-#endif  // V8_EMBEDDED_BUILTINS
 
 void TurboAssembler::Jump(Register target, int16_t offset, Condition cond,
                           Register rs, const Operand& rt, BranchDelaySlot bd) {
@@ -3745,8 +3727,9 @@ void TurboAssembler::Jump(intptr_t target, RelocInfo::Mode rmode,
   if (IsMipsArchVariant(kMips32r6) && bd == PROTECT) {
     uint32_t lui_offset, jic_offset;
     UnpackTargetAddressUnsigned(target, lui_offset, jic_offset);
-    DCHECK(MustUseReg(rmode));
-    RecordRelocInfo(rmode, target);
+    if (MustUseReg(rmode)) {
+      RecordRelocInfo(rmode, target);
+    }
     lui(t9, lui_offset);
     Jump(t9, jic_offset, al, zero_reg, Operand(zero_reg), bd);
   } else {
@@ -3766,28 +3749,25 @@ void TurboAssembler::Jump(Handle<Code> code, RelocInfo::Mode rmode,
                           Condition cond, Register rs, const Operand& rt,
                           BranchDelaySlot bd) {
   DCHECK(RelocInfo::IsCodeTarget(rmode));
-#ifdef V8_EMBEDDED_BUILTINS
-  if (root_array_available_ && isolate()->ShouldLoadConstantsFromRootList()) {
-    IndirectLoadConstant(t9, code);
-    Jump(t9, Code::kHeaderSize - kHeapObjectTag, cond, rs, rt, bd);
-    return;
-  } else if (!isolate()->serializer_enabled()) {
-    int builtin_index = Builtins::kNoBuiltinId;
-    if (isolate()->builtins()->IsBuiltinHandle(code, &builtin_index) &&
-        Builtins::IsIsolateIndependent(builtin_index)) {
-      // Inline the trampoline.
-      CHECK_NE(builtin_index, Builtins::kNoBuiltinId);
-      EmbeddedData d = EmbeddedData::FromBlob();
-      Address entry = d.InstructionStartOfBuiltin(builtin_index);
-      // RelocInfo is only necessary if generating code for the snapshot.
-      // Otherwise, the target address is immortal-immovable and never needs to
-      // be fixed up by GC (or deserialization).
-      li(t9, Operand(entry, RelocInfo::NONE));
-      Jump(t9, 0, cond, rs, rt, bd);
+  if (FLAG_embedded_builtins) {
+    if (root_array_available_ && options().isolate_independent_code) {
+      IndirectLoadConstant(t9, code);
+      Jump(t9, Code::kHeaderSize - kHeapObjectTag, cond, rs, rt, bd);
       return;
+    } else if (options().inline_offheap_trampolines) {
+      int builtin_index = Builtins::kNoBuiltinId;
+      if (isolate()->builtins()->IsBuiltinHandle(code, &builtin_index) &&
+          Builtins::IsIsolateIndependent(builtin_index)) {
+        // Inline the trampoline.
+        CHECK_NE(builtin_index, Builtins::kNoBuiltinId);
+        EmbeddedData d = EmbeddedData::FromBlob();
+        Address entry = d.InstructionStartOfBuiltin(builtin_index);
+        li(t9, Operand(entry, RelocInfo::OFF_HEAP_TARGET));
+        Jump(t9, 0, cond, rs, rt, bd);
+        return;
+      }
     }
   }
-#endif  // V8_EMBEDDED_BUILTINS
   Jump(static_cast<intptr_t>(code.address()), rmode, cond, rs, rt, bd);
 }
 
@@ -3939,28 +3919,25 @@ void TurboAssembler::Call(Handle<Code> code, RelocInfo::Mode rmode,
                           Condition cond, Register rs, const Operand& rt,
                           BranchDelaySlot bd) {
   BlockTrampolinePoolScope block_trampoline_pool(this);
-#ifdef V8_EMBEDDED_BUILTINS
-  if (root_array_available_ && isolate()->ShouldLoadConstantsFromRootList()) {
-    IndirectLoadConstant(t9, code);
-    Call(t9, Code::kHeaderSize - kHeapObjectTag, cond, rs, rt, bd);
-    return;
-  } else if (!isolate()->serializer_enabled()) {
-    int builtin_index = Builtins::kNoBuiltinId;
-    if (isolate()->builtins()->IsBuiltinHandle(code, &builtin_index) &&
-        Builtins::IsIsolateIndependent(builtin_index)) {
-      // Inline the trampoline.
-      CHECK_NE(builtin_index, Builtins::kNoBuiltinId);
-      EmbeddedData d = EmbeddedData::FromBlob();
-      Address entry = d.InstructionStartOfBuiltin(builtin_index);
-      // RelocInfo is only necessary if generating code for the snapshot.
-      // Otherwise, the target address is immortal-immovable and never needs to
-      // be fixed up by GC (or deserialization).
-      li(t9, Operand(entry, RelocInfo::NONE));
-      Call(t9, 0, cond, rs, rt, bd);
+  if (FLAG_embedded_builtins) {
+    if (root_array_available_ && options().isolate_independent_code) {
+      IndirectLoadConstant(t9, code);
+      Call(t9, Code::kHeaderSize - kHeapObjectTag, cond, rs, rt, bd);
       return;
+    } else if (options().inline_offheap_trampolines) {
+      int builtin_index = Builtins::kNoBuiltinId;
+      if (isolate()->builtins()->IsBuiltinHandle(code, &builtin_index) &&
+          Builtins::IsIsolateIndependent(builtin_index)) {
+        // Inline the trampoline.
+        CHECK_NE(builtin_index, Builtins::kNoBuiltinId);
+        EmbeddedData d = EmbeddedData::FromBlob();
+        Address entry = d.InstructionStartOfBuiltin(builtin_index);
+        li(t9, Operand(entry, RelocInfo::OFF_HEAP_TARGET));
+        Call(t9, 0, cond, rs, rt, bd);
+        return;
+      }
     }
   }
-#endif  // V8_EMBEDDED_BUILTINS
   Label start;
   bind(&start);
   DCHECK(RelocInfo::IsCodeTarget(rmode));
@@ -5054,18 +5031,6 @@ void MacroAssembler::AssertSmi(Register object) {
     Register scratch = temps.Acquire();
     andi(scratch, object, kSmiTagMask);
     Check(eq, AbortReason::kOperandIsASmi, scratch, Operand(zero_reg));
-  }
-}
-
-void MacroAssembler::AssertFixedArray(Register object) {
-  if (emit_debug_code()) {
-    STATIC_ASSERT(kSmiTag == 0);
-    SmiTst(object, t8);
-    Check(ne, AbortReason::kOperandIsASmiAndNotAFixedArray, t8,
-          Operand(zero_reg));
-    GetObjectType(object, t8, t8);
-    Check(eq, AbortReason::kOperandIsNotAFixedArray, t8,
-          Operand(FIXED_ARRAY_TYPE));
   }
 }
 

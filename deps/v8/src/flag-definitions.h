@@ -208,10 +208,11 @@ DEFINE_IMPLICATION(harmony_class_fields, harmony_private_fields)
 // Update bootstrapper.cc whenever adding a new feature flag.
 
 // Features that are still work in progress (behind individual flags).
-#define HARMONY_INPROGRESS_BASE(V)                            \
-  V(harmony_do_expressions, "harmony do-expressions")         \
-  V(harmony_class_fields, "harmony fields in class literals") \
-  V(harmony_static_fields, "harmony static fields in class literals")
+#define HARMONY_INPROGRESS_BASE(V)                                    \
+  V(harmony_do_expressions, "harmony do-expressions")                 \
+  V(harmony_class_fields, "harmony fields in class literals")         \
+  V(harmony_static_fields, "harmony static fields in class literals") \
+  V(harmony_await_optimization, "harmony await taking 1 tick")
 
 #ifdef V8_INTL_SUPPORT
 #define HARMONY_INPROGRESS(V) \
@@ -533,9 +534,18 @@ DEFINE_UINT(wasm_max_mem_pages, v8::internal::wasm::kV8MaxWasmMemoryPages,
             "maximum memory size of a wasm instance")
 DEFINE_UINT(wasm_max_table_size, v8::internal::wasm::kV8MaxWasmTableSize,
             "maximum table size of a wasm instance")
-DEFINE_BOOL(wasm_tier_up, false,
-            "enable basic tiering up to the optimizing compiler")
+// Enable liftoff by default on ia32 and x64. More architectures will follow
+// once they are implemented and sufficiently tested.
+#if V8_TARGET_ARCH_IA32 || V8_TARGET_ARCH_X64
+DEFINE_BOOL(
+    wasm_tier_up, true,
+    "enable wasm baseline compilation and tier up to the optimizing compiler")
+#else
+DEFINE_BOOL(
+    wasm_tier_up, false,
+    "enable wasm baseline compilation and tier up to the optimizing compiler")
 DEFINE_IMPLICATION(future, wasm_tier_up)
+#endif
 DEFINE_IMPLICATION(wasm_tier_up, liftoff)
 DEFINE_DEBUG_BOOL(trace_wasm_decoder, false, "trace decoding of wasm code")
 DEFINE_DEBUG_BOOL(trace_wasm_decode_time, false,
@@ -784,6 +794,12 @@ DEFINE_BOOL(optimize_ephemerons, true,
 DEFINE_NEG_NEG_IMPLICATION(optimize_ephemerons, parallel_ephemeron_marking)
 DEFINE_NEG_NEG_IMPLICATION(optimize_ephemerons, parallel_ephemeron_visiting)
 
+DEFINE_BOOL(clear_free_memory, true, "initialize free memory with 0")
+
+DEFINE_BOOL(young_generation_large_objects, false,
+            "allocates large objects by default in the young generation large "
+            "object space")
+
 // assembler-ia32.cc / assembler-arm.cc / assembler-x64.cc
 DEFINE_BOOL(debug_code, DEBUG_BOOL,
             "generate extra code (assertions) for debugging")
@@ -910,7 +926,6 @@ DEFINE_IMPLICATION(trace_array_abuse, trace_js_array_abuse)
 DEFINE_IMPLICATION(trace_array_abuse, trace_external_array_abuse)
 
 // debugger
-DEFINE_BOOL(enable_liveedit, true, "enable liveedit experimental feature")
 DEFINE_BOOL(
     trace_side_effect_free_debug_evaluate, false,
     "print debug messages for side-effect-free debug-evaluate for testing")
@@ -1047,6 +1062,13 @@ DEFINE_INT(runtime_stats, 0,
 DEFINE_VALUE_IMPLICATION(runtime_call_stats, runtime_stats, 1)
 
 // snapshot-common.cc
+#ifdef V8_EMBEDDED_BUILTINS
+#define V8_EMBEDDED_BUILTINS_BOOL true
+#else
+#define V8_EMBEDDED_BUILTINS_BOOL false
+#endif
+DEFINE_BOOL_READONLY(embedded_builtins, V8_EMBEDDED_BUILTINS_BOOL,
+                     "Embed builtin code into the binary.")
 DEFINE_BOOL(lazy_deserialization, true,
             "Deserialize code lazily from the snapshot.")
 DEFINE_BOOL(lazy_handler_deserialization, true,
@@ -1141,7 +1163,7 @@ DEFINE_NEG_IMPLICATION(gdbjit, compact_code_space)
 
 // checks.cc
 #ifdef ENABLE_SLOW_DCHECKS
-DEFINE_BOOL(enable_slow_asserts, false,
+DEFINE_BOOL(enable_slow_asserts, true,
             "enable asserts that are slow to execute")
 #endif
 

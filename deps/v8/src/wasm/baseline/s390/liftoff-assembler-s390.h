@@ -13,12 +13,12 @@ namespace v8 {
 namespace internal {
 namespace wasm {
 
-uint32_t LiftoffAssembler::PrepareStackFrame() {
+int LiftoffAssembler::PrepareStackFrame() {
   BAILOUT("PrepareStackFrame");
   return 0;
 }
 
-void LiftoffAssembler::PatchPrepareStackFrame(uint32_t offset,
+void LiftoffAssembler::PatchPrepareStackFrame(int offset,
                                               uint32_t stack_slots) {
   BAILOUT("PatchPrepareStackFrame");
 }
@@ -309,7 +309,9 @@ void LiftoffAssembler::emit_f64_set_cond(Condition cond, Register dst,
   BAILOUT("emit_f64_set_cond");
 }
 
-void LiftoffAssembler::StackCheck(Label* ool_code) { BAILOUT("StackCheck"); }
+void LiftoffAssembler::StackCheck(Label* ool_code, Register limit_address) {
+  BAILOUT("StackCheck");
+}
 
 void LiftoffAssembler::CallTrapCallbackForTesting() {
   BAILOUT("CallTrapCallbackForTesting");

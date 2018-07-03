@@ -52,7 +52,7 @@ TEST(0) {
   Isolate* isolate = CcTest::i_isolate();
   HandleScope scope(isolate);
 
-  Assembler assm(isolate, nullptr, 0);
+  Assembler assm(Assembler::Options{}, nullptr, 0);
 
   __ lhi(r1, Operand(3));    // test 4-byte instr
   __ llilf(r2, Operand(4));  // test 6-byte instr
@@ -65,7 +65,7 @@ TEST(0) {
   Handle<Code> code =
       isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
 #ifdef DEBUG
-  code->Print();
+  code->Print(isolate);
 #endif
   auto f = GeneratedCode<F2>::FromCode(*code);
   intptr_t res = reinterpret_cast<intptr_t>(f.Call(3, 4, 0, 0, 0));
@@ -79,7 +79,7 @@ TEST(1) {
   Isolate* isolate = CcTest::i_isolate();
   HandleScope scope(isolate);
 
-  Assembler assm(isolate, nullptr, 0);
+  Assembler assm(Assembler::Options{}, nullptr, 0);
   Label L, C;
 
 #if defined(_AIX)
@@ -104,7 +104,7 @@ TEST(1) {
   Handle<Code> code =
       isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
 #ifdef DEBUG
-  code->Print();
+  code->Print(isolate);
 #endif
   auto f = GeneratedCode<F1>::FromCode(*code);
   intptr_t res = reinterpret_cast<intptr_t>(f.Call(100, 0, 0, 0, 0));
@@ -119,7 +119,7 @@ TEST(2) {
 
   // Create a function that accepts &t, and loads, manipulates, and stores
   // the doubles and floats.
-  Assembler assm(CcTest::i_isolate(), nullptr, 0);
+  Assembler assm(Assembler::Options{}, nullptr, 0);
   Label L, C;
 
 #if defined(_AIX)
@@ -155,7 +155,7 @@ TEST(2) {
   Handle<Code> code =
       isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
 #ifdef DEBUG
-  code->Print();
+  code->Print(isolate);
 #endif
   auto f = GeneratedCode<F1>::FromCode(*code);
   intptr_t res = reinterpret_cast<intptr_t>(f.Call(10, 0, 0, 0, 0));
@@ -168,7 +168,7 @@ TEST(3) {
   Isolate* isolate = CcTest::i_isolate();
   HandleScope scope(isolate);
 
-  Assembler assm(isolate, nullptr, 0);
+  Assembler assm(Assembler::Options{}, nullptr, 0);
 
   __ ar(r14, r13);
   __ sr(r14, r13);
@@ -210,7 +210,7 @@ TEST(3) {
   Handle<Code> code =
       isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
 #ifdef DEBUG
-  code->Print();
+  code->Print(isolate);
 #endif
   USE(code);
   ::exit(0);
@@ -222,7 +222,7 @@ TEST(4) {
   Isolate* isolate = CcTest::i_isolate();
   HandleScope scope(isolate);
 
-  Assembler assm(isolate, nullptr, 0);
+  Assembler assm(Assembler::Options{}, nullptr, 0);
   Label L2, L3, L4;
 
   __ chi(r2, Operand(10));
@@ -251,7 +251,7 @@ TEST(4) {
   Handle<Code> code = isolate->factory()->NewCode(
       desc, Code::STUB, Handle<Code>());
 #ifdef DEBUG
-  code->Print();
+  code->Print(isolate);
 #endif
   auto f = GeneratedCode<F2>::FromCode(*code);
   intptr_t res = reinterpret_cast<intptr_t>(
@@ -279,7 +279,7 @@ TEST(5) {
   Handle<Code> code = isolate->factory()->NewCode(
       desc, Code::STUB, Handle<Code>());
 #ifdef DEBUG
-  code->Print();
+  code->Print(isolate);
 #endif
   auto f = GeneratedCode<F2>::FromCode(*code);
   intptr_t res =
@@ -313,7 +313,7 @@ TEST(6) {
   Handle<Code> code = isolate->factory()->NewCode(
       desc, Code::STUB, Handle<Code>());
 #ifdef DEBUG
-  code->Print();
+  code->Print(isolate);
 #endif
   auto f = GeneratedCode<F2>::FromCode(*code);
   intptr_t res =
@@ -345,7 +345,7 @@ TEST(7) {
   Handle<Code> code = isolate->factory()->NewCode(
       desc, Code::STUB, Handle<Code>());
 #ifdef DEBUG
-  code->Print();
+  code->Print(isolate);
 #endif
   auto f = GeneratedCode<F2>::FromCode(*code);
   intptr_t res =
@@ -376,7 +376,7 @@ TEST(8) {
   Handle<Code> code = isolate->factory()->NewCode(
       desc, Code::STUB, Handle<Code>());
 #ifdef DEBUG
-  code->Print();
+  code->Print(isolate);
 #endif
   auto f = GeneratedCode<F1>::FromCode(*code);
   intptr_t res =
@@ -403,7 +403,7 @@ TEST(9) {
   Handle<Code> code = isolate->factory()->NewCode(
       desc, Code::STUB, Handle<Code>());
 #ifdef DEBUG
-  code->Print();
+  code->Print(isolate);
 #endif
   auto f = GeneratedCode<F1>::FromCode(*code);
   intptr_t res =
@@ -424,7 +424,7 @@ TEST(10) {
   Isolate* isolate = CcTest::i_isolate();
   HandleScope scope(isolate);
 
-  Assembler assm(isolate, nullptr, 0);
+  Assembler assm(Assembler::Options{}, nullptr, 0);
 
   Label ok, failed;
 
@@ -488,7 +488,7 @@ TEST(10) {
   Handle<Code> code =
       isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
 #ifdef DEBUG
-  code->Print();
+  code->Print(isolate);
 #endif
   auto f = GeneratedCode<F2>::FromCode(*code);
   intptr_t res = reinterpret_cast<intptr_t>(f.Call(3, 4, 0, 0, 0));
@@ -502,7 +502,7 @@ TEST(11) {
   CcTest::InitializeVM();
   Isolate* isolate = CcTest::i_isolate();
   HandleScope scope(isolate);
-  Assembler assm(isolate, nullptr, 0);
+  Assembler assm(Assembler::Options{}, nullptr, 0);
 
   Label ok, failed, continue1, continue2;
   // r1 - operand; r3 - inc / test val
@@ -542,7 +542,7 @@ TEST(11) {
   Handle<Code> code = isolate->factory()->NewCode(
       desc, Code::STUB, Handle<Code>());
 #ifdef DEBUG
-  code->Print();
+  code->Print(isolate);
 #endif
   auto f = GeneratedCode<F1>::FromCode(*code);
   intptr_t res = reinterpret_cast<intptr_t>(f.Call(0, 0, 0, 0, 0));
@@ -556,7 +556,7 @@ TEST(12) {
   CcTest::InitializeVM();
   Isolate* isolate = CcTest::i_isolate();
   HandleScope scope(isolate);
-  Assembler assm(isolate, nullptr, 0);
+  Assembler assm(Assembler::Options{}, nullptr, 0);
 
   Label ok, failed, continue1, continue2;
   // r1 - operand; r3 - inc / test val
@@ -610,7 +610,7 @@ TEST(12) {
   Handle<Code> code = isolate->factory()->NewCode(
       desc, Code::STUB, Handle<Code>());
 #ifdef DEBUG
-  code->Print();
+  code->Print(isolate);
 #endif
   auto f = GeneratedCode<F1>::FromCode(*code);
   intptr_t res = reinterpret_cast<intptr_t>(f.Call(0, 0, 0, 0, 0));

@@ -183,7 +183,11 @@ AllocationResult Heap::AllocateRaw(int size_in_bytes, AllocationSpace space,
     }
   } else if (LO_SPACE == space) {
     DCHECK(large_object);
-    allocation = lo_space_->AllocateRaw(size_in_bytes, NOT_EXECUTABLE);
+    if (FLAG_young_generation_large_objects) {
+      allocation = new_lo_space_->AllocateRaw(size_in_bytes, NOT_EXECUTABLE);
+    } else {
+      allocation = lo_space_->AllocateRaw(size_in_bytes, NOT_EXECUTABLE);
+    }
   } else if (MAP_SPACE == space) {
     allocation = map_space_->AllocateRawUnaligned(size_in_bytes);
   } else if (RO_SPACE == space) {
@@ -392,6 +396,19 @@ bool Heap::InOldSpaceSlow(Address address) {
   return old_space_->ContainsSlow(address);
 }
 
+// static
+Heap* Heap::FromWritableHeapObject(const HeapObject* obj) {
+  MemoryChunk* chunk = MemoryChunk::FromHeapObject(obj);
+  // RO_SPACE can be shared between heaps, so we can't use RO_SPACE objects to
+  // find a heap. The exception is when the ReadOnlySpace is writeable, during
+  // bootstrapping, so explicitly allow this case.
+  SLOW_DCHECK(chunk->owner()->identity() != RO_SPACE ||
+              static_cast<ReadOnlySpace*>(chunk->owner())->writable());
+  Heap* heap = chunk->heap();
+  SLOW_DCHECK(heap != nullptr);
+  return heap;
+}
+
 bool Heap::ShouldBePromoted(Address old_address) {
   Page* page = Page::FromAddress(old_address);
   Address age_mark = new_space_->age_mark();
@@ -558,8 +575,8 @@ int Heap::NextScriptId() {
 
 int Heap::NextDebuggingId() {
   int last_id = last_debugging_id()->value();
-  if (last_id == SharedFunctionInfo::DebuggingIdBits::kMax) {
-    last_id = SharedFunctionInfo::kNoDebuggingId;
+  if (last_id == DebugInfo::DebuggingIdBits::kMax) {
+    last_id = DebugInfo::kNoDebuggingId;
   }
   last_id++;
   set_last_debugging_id(Smi::FromInt(last_id));

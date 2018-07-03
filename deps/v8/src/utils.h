@@ -1240,29 +1240,31 @@ Vector<const char> ReadFile(FILE* file,
                             bool* exists,
                             bool verbose = true);
 
-
 template <typename sourcechar, typename sinkchar>
-INLINE(static void CopyCharsUnsigned(sinkchar* dest, const sourcechar* src,
-                                     size_t chars));
+V8_INLINE static void CopyCharsUnsigned(sinkchar* dest, const sourcechar* src,
+                                        size_t chars);
 #if defined(V8_HOST_ARCH_ARM)
-INLINE(void CopyCharsUnsigned(uint8_t* dest, const uint8_t* src, size_t chars));
-INLINE(void CopyCharsUnsigned(uint16_t* dest, const uint8_t* src,
-                              size_t chars));
-INLINE(void CopyCharsUnsigned(uint16_t* dest, const uint16_t* src,
-                              size_t chars));
+V8_INLINE void CopyCharsUnsigned(uint8_t* dest, const uint8_t* src,
+                                 size_t chars);
+V8_INLINE void CopyCharsUnsigned(uint16_t* dest, const uint8_t* src,
+                                 size_t chars);
+V8_INLINE void CopyCharsUnsigned(uint16_t* dest, const uint16_t* src,
+                                 size_t chars);
 #elif defined(V8_HOST_ARCH_MIPS)
-INLINE(void CopyCharsUnsigned(uint8_t* dest, const uint8_t* src, size_t chars));
-INLINE(void CopyCharsUnsigned(uint16_t* dest, const uint16_t* src,
-                              size_t chars));
+V8_INLINE void CopyCharsUnsigned(uint8_t* dest, const uint8_t* src,
+                                 size_t chars);
+V8_INLINE void CopyCharsUnsigned(uint16_t* dest, const uint16_t* src,
+                                 size_t chars);
 #elif defined(V8_HOST_ARCH_PPC) || defined(V8_HOST_ARCH_S390)
-INLINE(void CopyCharsUnsigned(uint8_t* dest, const uint8_t* src, size_t chars));
-INLINE(void CopyCharsUnsigned(uint16_t* dest, const uint16_t* src,
-                              size_t chars));
+V8_INLINE void CopyCharsUnsigned(uint8_t* dest, const uint8_t* src,
+                                 size_t chars);
+V8_INLINE void CopyCharsUnsigned(uint16_t* dest, const uint16_t* src,
+                                 size_t chars);
 #endif
 
 // Copy from 8bit/16bit chars to 8bit/16bit chars.
 template <typename sourcechar, typename sinkchar>
-INLINE(void CopyChars(sinkchar* dest, const sourcechar* src, size_t chars));
+V8_INLINE void CopyChars(sinkchar* dest, const sourcechar* src, size_t chars);
 
 template <typename sourcechar, typename sinkchar>
 void CopyChars(sinkchar* dest, const sourcechar* src, size_t chars) {
@@ -1664,13 +1666,13 @@ static inline V ByteReverse(V value) {
   switch (size_of_v) {
     case 2:
 #if V8_HAS_BUILTIN_BSWAP16
-      return __builtin_bswap16(value);
+      return static_cast<V>(__builtin_bswap16(static_cast<uint16_t>(value)));
 #else
       return value << 8 | (value >> 8 & 0x00FF);
 #endif
     case 4:
 #if V8_HAS_BUILTIN_BSWAP32
-      return __builtin_bswap32(value);
+      return static_cast<V>(__builtin_bswap32(static_cast<uint32_t>(value)));
 #else
     {
       size_t bits_of_v = size_of_v * kBitsPerByte;
@@ -1682,7 +1684,7 @@ static inline V ByteReverse(V value) {
 #endif
     case 8:
 #if V8_HAS_BUILTIN_BSWAP64
-      return __builtin_bswap64(value);
+      return static_cast<V>(__builtin_bswap64(static_cast<uint64_t>(value)));
 #else
     {
       size_t bits_of_v = size_of_v * kBitsPerByte;

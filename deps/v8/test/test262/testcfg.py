@@ -51,9 +51,10 @@ FEATURE_FLAGS = {
   'Symbol.matchAll': '--harmony-string-matchall',
   'numeric-separator-literal': '--harmony-numeric-separator',
   'Intl.Locale': '--harmony-locale',
+  'Symbol.prototype.description': '--harmony-symbol-description',
 }
 
-SKIPPED_FEATURES = set([])
+SKIPPED_FEATURES = set(['Intl.RelativeTimeFormat'])
 
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 

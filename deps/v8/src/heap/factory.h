@@ -30,6 +30,8 @@ class CallableTask;
 class CallbackTask;
 class CallHandlerInfo;
 class ConstantElementsPair;
+class Expression;
+class CompileTimeValue;
 class CoverageInfo;
 class DebugInfo;
 class EnumCache;
@@ -193,6 +195,9 @@ class V8_EXPORT_PRIVATE Factory {
   // Create a new ConstantElementsPair struct.
   Handle<ConstantElementsPair> NewConstantElementsPair(
       ElementsKind elements_kind, Handle<FixedArrayBase> constant_values);
+
+  // Create a new CompileTimeValue struct.
+  Handle<CompileTimeValue> NewCompileTimeValue(Expression* expression);
 
   // Create a new TemplateObjectDescription struct.
   Handle<TemplateObjectDescription> NewTemplateObjectDescription(
@@ -401,6 +406,8 @@ class V8_EXPORT_PRIVATE Factory {
 
   Handle<Script> NewScript(Handle<String> source,
                            PretenureFlag tenure = TENURED);
+  Handle<Script> NewScriptWithId(Handle<String> source, int script_id,
+                                 PretenureFlag tenure = TENURED);
 
   Handle<BreakPointInfo> NewBreakPointInfo(int source_position);
   Handle<BreakPoint> NewBreakPoint(int id, Handle<String> condition);
@@ -454,7 +461,7 @@ class V8_EXPORT_PRIVATE Factory {
                                              int slack = 0);
 
   // Allocate a tenured AllocationSite. Its payload is null.
-  Handle<AllocationSite> NewAllocationSite();
+  Handle<AllocationSite> NewAllocationSite(bool with_weak_next);
 
   // Allocates and initializes a new Map.
   Handle<Map> NewMap(InstanceType type, int instance_size,
@@ -525,18 +532,21 @@ class V8_EXPORT_PRIVATE Factory {
   inline Handle<Object> NewNumberFromInt64(
       int64_t value, PretenureFlag pretenure = NOT_TENURED);
   inline Handle<HeapNumber> NewHeapNumber(
-      double value, MutableMode mode = IMMUTABLE,
-      PretenureFlag pretenure = NOT_TENURED);
+      double value, PretenureFlag pretenure = NOT_TENURED);
   inline Handle<HeapNumber> NewHeapNumberFromBits(
-      uint64_t bits, MutableMode mode = IMMUTABLE,
-      PretenureFlag pretenure = NOT_TENURED);
-  // Creates mutable heap number object with value field set to hole NaN.
-  inline Handle<HeapNumber> NewMutableHeapNumber(
-      PretenureFlag pretenure = NOT_TENURED);
+      uint64_t bits, PretenureFlag pretenure = NOT_TENURED);
 
   // Creates heap number object with not yet set value field.
-  Handle<HeapNumber> NewHeapNumber(MutableMode mode,
-                                   PretenureFlag pretenure = NOT_TENURED);
+  Handle<HeapNumber> NewHeapNumber(PretenureFlag pretenure = NOT_TENURED);
+
+  Handle<MutableHeapNumber> NewMutableHeapNumber(
+      PretenureFlag pretenure = NOT_TENURED);
+  inline Handle<MutableHeapNumber> NewMutableHeapNumber(
+      double value, PretenureFlag pretenure = NOT_TENURED);
+  inline Handle<MutableHeapNumber> NewMutableHeapNumberFromBits(
+      uint64_t bits, PretenureFlag pretenure = NOT_TENURED);
+  inline Handle<MutableHeapNumber> NewMutableHeapNumberWithHoleNaN(
+      PretenureFlag pretenure = NOT_TENURED);
 
   // Allocates a new BigInt with {length} digits. Only to be used by
   // MutableBigInt::New*.
@@ -755,12 +765,10 @@ class V8_EXPORT_PRIVATE Factory {
   // initialization by the caller.
   Handle<Code> NewCodeForDeserialization(uint32_t size);
 
-#ifdef V8_EMBEDDED_BUILTINS
   // Allocates a new code object and initializes it as the trampoline to the
   // given off-heap entry point.
   Handle<Code> NewOffHeapTrampolineFor(Handle<Code> code,
                                        Address off_heap_entry);
-#endif
 
   Handle<Code> CopyCode(Handle<Code> code);
 

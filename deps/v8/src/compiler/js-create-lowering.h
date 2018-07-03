@@ -23,7 +23,6 @@ namespace compiler {
 // Forward declarations.
 class CommonOperatorBuilder;
 class JSGraph;
-class JSHeapBroker;
 class JSOperatorBuilder;
 class MachineOperatorBuilder;
 class SimplifiedOperatorBuilder;
@@ -81,11 +80,12 @@ class V8_EXPORT_PRIVATE JSCreateLowering final
   Node* AllocateRestArguments(Node* effect, Node* control, Node* frame_state,
                               int start_index);
   Node* AllocateAliasedArguments(Node* effect, Node* control, Node* frame_state,
-                                 Node* context, Handle<SharedFunctionInfo>,
+                                 Node* context,
+                                 const SharedFunctionInfoRef& shared,
                                  bool* has_aliased_arguments);
   Node* AllocateAliasedArguments(Node* effect, Node* control, Node* context,
                                  Node* arguments_frame, Node* arguments_length,
-                                 Handle<SharedFunctionInfo>,
+                                 const SharedFunctionInfoRef& shared,
                                  bool* has_aliased_arguments);
   Node* AllocateElements(Node* effect, Node* control,
                          ElementsKind elements_kind, int capacity,
@@ -97,14 +97,12 @@ class V8_EXPORT_PRIVATE JSCreateLowering final
                          std::vector<Node*> const& values,
                          PretenureFlag pretenure);
   Node* AllocateFastLiteral(Node* effect, Node* control,
-                            Handle<JSObject> boilerplate,
-                            AllocationSiteUsageContext* site_context);
+                            JSObjectRef boilerplate, PretenureFlag pretenure);
   Node* AllocateFastLiteralElements(Node* effect, Node* control,
-                                    Handle<JSObject> boilerplate,
-                                    PretenureFlag pretenure,
-                                    AllocationSiteUsageContext* site_context);
+                                    JSObjectRef boilerplate,
+                                    PretenureFlag pretenure);
   Node* AllocateLiteralRegExp(Node* effect, Node* control,
-                              Handle<JSRegExp> boilerplate);
+                              JSRegExpRef boilerplate);
 
   Reduction ReduceNewArrayToStubCall(Node* node, Handle<AllocationSite> site);
 
@@ -113,6 +111,7 @@ class V8_EXPORT_PRIVATE JSCreateLowering final
   JSGraph* jsgraph() const { return jsgraph_; }
   Isolate* isolate() const;
   Handle<Context> native_context() const { return native_context_; }
+  NativeContextRef native_context_ref() const;
   CommonOperatorBuilder* common() const;
   SimplifiedOperatorBuilder* simplified() const;
   CompilationDependencies* dependencies() const { return dependencies_; }

@@ -715,6 +715,10 @@ class Heap {
 #endif
   }
 
+  static uintptr_t ZapValue() {
+    return FLAG_clear_free_memory ? kClearedFreeMemoryValue : kZapValue;
+  }
+
   static inline bool IsYoungGenerationCollector(GarbageCollector collector) {
     return collector == SCAVENGER || collector == MINOR_MARK_COMPACTOR;
   }
@@ -804,6 +808,11 @@ class Heap {
 
   // Used in CreateAllocationSiteStub and the (de)serializer.
   Object** allocation_sites_list_address() { return &allocation_sites_list_; }
+
+  // Traverse all the allocaions_sites [nested_site and weak_next] in the list
+  // and foreach call the visitor
+  void ForeachAllocationSite(Object* list,
+                             std::function<void(AllocationSite*)> visitor);
 
   // Number of mark-sweeps.
   int ms_count() const { return ms_count_; }
@@ -1007,6 +1016,7 @@ class Heap {
   CodeSpace* code_space() { return code_space_; }
   MapSpace* map_space() { return map_space_; }
   LargeObjectSpace* lo_space() { return lo_space_; }
+  NewLargeObjectSpace* new_lo_space() { return new_lo_space_; }
   ReadOnlySpace* read_only_space() { return read_only_space_; }
 
   inline PagedSpace* paged_space(int idx);
@@ -1393,6 +1403,10 @@ class Heap {
   inline bool InNewSpaceSlow(Address address);
   inline bool InOldSpaceSlow(Address address);
 
+  // Find the heap which owns this HeapObject. Should never be called for
+  // objects in RO space.
+  static inline Heap* FromWritableHeapObject(const HeapObject* obj);
+
   // ===========================================================================
   // Object statistics tracking. ===============================================
   // ===========================================================================
@@ -1660,6 +1674,7 @@ class Heap {
     return !allocation_trackers_.empty();
   }
 
+  // ===========================================================================
   // Retaining path tracking. ==================================================
   // ===========================================================================
 
@@ -1904,9 +1919,9 @@ class Heap {
 
   // These five Create*EntryStub functions are here and forced to not be inlined
   // because of a gcc-4.4 bug that assigns wrong vtable entries.
-  NO_INLINE(void CreateJSEntryStub());
-  NO_INLINE(void CreateJSConstructEntryStub());
-  NO_INLINE(void CreateJSRunMicrotasksEntryStub());
+  V8_NOINLINE void CreateJSEntryStub();
+  V8_NOINLINE void CreateJSConstructEntryStub();
+  V8_NOINLINE void CreateJSRunMicrotasksEntryStub();
 
   void CreateFixedStubs();
 
@@ -2107,7 +2122,8 @@ class Heap {
 
   bool ShouldExpandOldGenerationOnSlowAllocation();
 
-  enum class HeapGrowingMode { kDefault, kConservative, kMinimal };
+  enum class HeapGrowingMode { kSlow, kConservative, kMinimal, kDefault };
+
   HeapGrowingMode CurrentHeapGrowingMode();
 
   enum class IncrementalMarkingLimit { kNoLimit, kSoftLimit, kHardLimit };
@@ -2280,6 +2296,7 @@ class Heap {
   CodeSpace* code_space_;
   MapSpace* map_space_;
   LargeObjectSpace* lo_space_;
+  NewLargeObjectSpace* new_lo_space_;
   ReadOnlySpace* read_only_space_;
   // Map from the space id to the space.
   Space* space_[LAST_SPACE + 1];

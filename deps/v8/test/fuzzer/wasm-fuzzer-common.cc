@@ -144,6 +144,7 @@ struct PrintName {
 std::ostream& operator<<(std::ostream& os, const PrintName& name) {
   return os.write(name.name.start(), name.name.size());
 }
+}  // namespace
 
 void GenerateTestCase(Isolate* isolate, ModuleWireBytes wire_bytes,
                       bool compiles) {
@@ -171,10 +172,15 @@ void GenerateTestCase(Isolate* isolate, ModuleWireBytes wire_bytes,
   if (module->has_memory) {
     os << "  builder.addMemory(" << module->initial_pages;
     if (module->has_maximum_pages) {
-      os << ", " << module->maximum_pages << ");\n";
+      os << ", " << module->maximum_pages;
     } else {
-      os << ");\n";
+      os << ", undefined";
     }
+    os << ", " << (module->mem_export ? "true" : "false");
+    if (FLAG_experimental_wasm_threads && module->has_shared_memory) {
+      os << ", shared";
+    }
+    os << ");\n";
   }
 
   for (WasmGlobal& glob : module->globals) {
@@ -236,7 +242,6 @@ void GenerateTestCase(Isolate* isolate, ModuleWireBytes wire_bytes,
   }
   os << "})();\n";
 }
-}  // namespace
 
 int WasmExecutionFuzzer::FuzzWasmModule(const uint8_t* data, size_t size,
                                         bool require_valid) {
@@ -348,6 +353,7 @@ int WasmExecutionFuzzer::FuzzWasmModule(const uint8_t* data, size_t size,
   int32_t result_liftoff;
   {
     FlagScope<bool> liftoff(&FLAG_liftoff, true);
+    FlagScope<bool> no_tier_up(&FLAG_wasm_tier_up, false);
     ErrorThrower compiler_thrower(i_isolate, "Liftoff");
     // Re-compile with Liftoff.
     MaybeHandle<WasmInstanceObject> compiled_instance =

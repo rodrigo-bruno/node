@@ -143,7 +143,7 @@ JsonParser<seq_one_byte>::JsonParser(Isolate* isolate, Handle<String> source)
                           isolate_),
       position_(-1),
       properties_(&zone_) {
-  source_ = String::Flatten(source_);
+  source_ = String::Flatten(isolate, source_);
   pretenure_ = (source_length_ >= kPretenureTreshold) ? TENURED : NOT_TENURED;
 
   // Optimized fast case where we only have Latin1 characters.
@@ -365,7 +365,7 @@ Handle<Object> JsonParser<seq_one_byte>::ParseJsonObject() {
   HandleScope scope(isolate());
   Handle<JSObject> json_object =
       factory()->NewJSObject(object_constructor(), pretenure_);
-  Handle<Map> map(json_object->map());
+  Handle<Map> map(json_object->map(), isolate());
   int descriptor = 0;
   VectorSegment<ZoneVector<Handle<Object>>> properties(&properties_);
   DCHECK_EQ(c0_, '{');
@@ -441,8 +441,9 @@ Handle<Object> JsonParser<seq_one_byte>::ParseJsonObject() {
                    ->NowContains(value)) {
             Handle<FieldType> value_type(
                 value->OptimalType(isolate(), expected_representation));
-            Map::GeneralizeField(target, descriptor, details.constness(),
-                                 expected_representation, value_type);
+            Map::GeneralizeField(isolate(), target, descriptor,
+                                 details.constness(), expected_representation,
+                                 value_type);
           }
           DCHECK(target->instance_descriptors()
                      ->GetFieldType(descriptor)

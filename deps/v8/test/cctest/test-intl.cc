@@ -18,17 +18,6 @@ namespace internal {
 bool operator==(const NumberFormatSpan& lhs, const NumberFormatSpan& rhs) {
   return memcmp(&lhs, &rhs, sizeof(lhs)) == 0;
 }
-template <typename _CharT, typename _Traits, typename T>
-std::basic_ostream<_CharT, _Traits>& operator<<(
-    std::basic_ostream<_CharT, _Traits>& self, const std::vector<T>& v) {
-  self << "[";
-  for (auto it = v.begin(); it < v.end();) {
-    self << *it;
-    it++;
-    if (it < v.end()) self << ", ";
-  }
-  return self << "]";
-}
 template <typename _CharT, typename _Traits>
 std::basic_ostream<_CharT, _Traits>& operator<<(
     std::basic_ostream<_CharT, _Traits>& self, const NumberFormatSpan& part) {
@@ -149,7 +138,7 @@ TEST(GetOptions) {
   CHECK(result->IsString());
   Handle<String> expected_str =
       isolate->factory()->NewStringFromAsciiChecked("42");
-  CHECK(String::Equals(expected_str, Handle<String>::cast(result)));
+  CHECK(String::Equals(isolate, expected_str, Handle<String>::cast(result)));
 
   result = Object::GetOption(isolate, options, key, Object::OptionType::Boolean,
                              empty_fixed_array, undefined, service)
@@ -173,7 +162,7 @@ TEST(GetOptions) {
                              values, undefined, service)
                .ToHandleChecked();
   CHECK(result->IsString());
-  CHECK(String::Equals(expected_str, Handle<String>::cast(result)));
+  CHECK(String::Equals(isolate, expected_str, Handle<String>::cast(result)));
 
   // Test boolean values
   CHECK(Object::SetProperty(&it, isolate->factory()->ToBoolean(false),
@@ -194,15 +183,13 @@ TEST(GetOptions) {
 
 bool ScriptTagWasRemoved(std::string locale, std::string expected) {
   std::string without_script_tag;
-  bool didShorten =
-      IntlUtil::RemoveLocaleScriptTag(locale, &without_script_tag);
+  bool didShorten = Intl::RemoveLocaleScriptTag(locale, &without_script_tag);
   return didShorten && expected == without_script_tag;
 }
 
 bool ScriptTagWasNotRemoved(std::string locale) {
   std::string without_script_tag;
-  bool didShorten =
-      IntlUtil::RemoveLocaleScriptTag(locale, &without_script_tag);
+  bool didShorten = Intl::RemoveLocaleScriptTag(locale, &without_script_tag);
   return !didShorten && without_script_tag.empty();
 }
 
@@ -220,21 +207,59 @@ TEST(RemoveLocaleScriptTag) {
 TEST(GetAvailableLocales) {
   std::set<std::string> locales;
 
-  locales = IntlUtil::GetAvailableLocales(IcuService::kBreakIterator);
+  locales = Intl::GetAvailableLocales(IcuService::kBreakIterator);
   CHECK(locales.count("en-US"));
   CHECK(!locales.count("abcdefg"));
 
-  locales = IntlUtil::GetAvailableLocales(IcuService::kCollator);
+  locales = Intl::GetAvailableLocales(IcuService::kCollator);
   CHECK(locales.count("en-US"));
 
-  locales = IntlUtil::GetAvailableLocales(IcuService::kDateFormat);
+  locales = Intl::GetAvailableLocales(IcuService::kDateFormat);
   CHECK(locales.count("en-US"));
 
-  locales = IntlUtil::GetAvailableLocales(IcuService::kNumberFormat);
+  locales = Intl::GetAvailableLocales(IcuService::kNumberFormat);
   CHECK(locales.count("en-US"));
 
-  locales = IntlUtil::GetAvailableLocales(IcuService::kPluralRules);
+  locales = Intl::GetAvailableLocales(IcuService::kPluralRules);
   CHECK(locales.count("en-US"));
+}
+
+TEST(IsObjectOfType) {
+  LocalContext env;
+  Isolate* isolate = CcTest::i_isolate();
+  v8::Isolate* v8_isolate = env->GetIsolate();
+  v8::HandleScope handle_scope(v8_isolate);
+
+  Handle<JSObject> obj = isolate->factory()->NewJSObjectWithNullProto();
+  Handle<Symbol> marker = isolate->factory()->intl_initialized_marker_symbol();
+
+  STATIC_ASSERT(Intl::Type::kNumberFormat == 0);
+  Intl::Type types[] = {Intl::Type::kNumberFormat,   Intl::Type::kCollator,
+                        Intl::Type::kDateTimeFormat, Intl::Type::kPluralRules,
+                        Intl::Type::kBreakIterator,  Intl::Type::kLocale};
+
+  for (auto type : types) {
+    Handle<Smi> tag =
+        Handle<Smi>(Smi::FromInt(static_cast<int>(type)), isolate);
+    JSObject::SetProperty(obj, marker, tag, LanguageMode::kStrict).Assert();
+
+    CHECK(Intl::IsObjectOfType(isolate, obj, type));
+  }
+
+  Handle<Object> tag = isolate->factory()->NewStringFromAsciiChecked("foo");
+  JSObject::SetProperty(obj, marker, tag, LanguageMode::kStrict).Assert();
+  CHECK(!Intl::IsObjectOfType(isolate, obj, types[0]));
+
+  CHECK(!Intl::IsObjectOfType(isolate, tag, types[0]));
+  CHECK(!Intl::IsObjectOfType(isolate, Handle<Smi>(Smi::FromInt(0), isolate),
+                              types[0]));
+
+  // Proxy with target as an initialized object should fail.
+  tag = Handle<Smi>(Smi::FromInt(static_cast<int>(types[0])), isolate);
+  JSObject::SetProperty(obj, marker, tag, LanguageMode::kStrict).Assert();
+  Handle<JSReceiver> proxy = isolate->factory()->NewJSProxy(
+      obj, isolate->factory()->NewJSObjectWithNullProto());
+  CHECK(!Intl::IsObjectOfType(isolate, proxy, types[0]));
 }
 
 }  // namespace internal

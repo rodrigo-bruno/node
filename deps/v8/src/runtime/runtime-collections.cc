@@ -23,8 +23,8 @@ RUNTIME_FUNCTION(Runtime_SetGrow) {
   HandleScope scope(isolate);
   DCHECK_EQ(1, args.length());
   CONVERT_ARG_HANDLE_CHECKED(JSSet, holder, 0);
-  Handle<OrderedHashSet> table(OrderedHashSet::cast(holder->table()));
-  table = OrderedHashSet::EnsureGrowable(table);
+  Handle<OrderedHashSet> table(OrderedHashSet::cast(holder->table()), isolate);
+  table = OrderedHashSet::EnsureGrowable(isolate, table);
   holder->set_table(*table);
   return isolate->heap()->undefined_value();
 }
@@ -34,8 +34,8 @@ RUNTIME_FUNCTION(Runtime_SetShrink) {
   HandleScope scope(isolate);
   DCHECK_EQ(1, args.length());
   CONVERT_ARG_HANDLE_CHECKED(JSSet, holder, 0);
-  Handle<OrderedHashSet> table(OrderedHashSet::cast(holder->table()));
-  table = OrderedHashSet::Shrink(table);
+  Handle<OrderedHashSet> table(OrderedHashSet::cast(holder->table()), isolate);
+  table = OrderedHashSet::Shrink(isolate, table);
   holder->set_table(*table);
   return isolate->heap()->undefined_value();
 }
@@ -54,8 +54,8 @@ RUNTIME_FUNCTION(Runtime_MapShrink) {
   HandleScope scope(isolate);
   DCHECK_EQ(1, args.length());
   CONVERT_ARG_HANDLE_CHECKED(JSMap, holder, 0);
-  Handle<OrderedHashMap> table(OrderedHashMap::cast(holder->table()));
-  table = OrderedHashMap::Shrink(table);
+  Handle<OrderedHashMap> table(OrderedHashMap::cast(holder->table()), isolate);
+  table = OrderedHashMap::Shrink(isolate, table);
   holder->set_table(*table);
   return isolate->heap()->undefined_value();
 }
@@ -64,8 +64,8 @@ RUNTIME_FUNCTION(Runtime_MapGrow) {
   HandleScope scope(isolate);
   DCHECK_EQ(1, args.length());
   CONVERT_ARG_HANDLE_CHECKED(JSMap, holder, 0);
-  Handle<OrderedHashMap> table(OrderedHashMap::cast(holder->table()));
-  table = OrderedHashMap::EnsureGrowable(table);
+  Handle<OrderedHashMap> table(OrderedHashMap::cast(holder->table()), isolate);
+  table = OrderedHashMap::EnsureGrowable(isolate, table);
   holder->set_table(*table);
   return isolate->heap()->undefined_value();
 }
@@ -100,7 +100,7 @@ RUNTIME_FUNCTION(Runtime_WeakCollectionDelete) {
   DCHECK(key->IsJSReceiver());
   DCHECK(EphemeronHashTableShape::IsLive(isolate, *key));
   Handle<EphemeronHashTable> table(
-      EphemeronHashTable::cast(weak_collection->table()));
+      EphemeronHashTable::cast(weak_collection->table()), isolate);
   // Should only be called when shrinking the table is necessary. See
   // HashTable::Shrink().
   DCHECK(table->NumberOfElements() - 1 <= (table->Capacity() >> 2) &&
@@ -132,7 +132,7 @@ RUNTIME_FUNCTION(Runtime_WeakCollectionSet) {
   DCHECK(key->IsJSReceiver());
   DCHECK(EphemeronHashTableShape::IsLive(isolate, *key));
   Handle<EphemeronHashTable> table(
-      EphemeronHashTable::cast(weak_collection->table()));
+      EphemeronHashTable::cast(weak_collection->table()), isolate);
   // Should only be called when rehashing or resizing the table is necessary.
   // See EphemeronHashTable::Put() and HashTable::HasSufficientCapacityToAdd().
   DCHECK((table->NumberOfDeletedElements() << 1) > table->NumberOfElements() ||

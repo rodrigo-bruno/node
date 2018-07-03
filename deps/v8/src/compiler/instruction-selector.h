@@ -251,7 +251,10 @@ class V8_EXPORT_PRIVATE InstructionSelector final {
 
   enum SourcePositionMode { kCallSourcePositions, kAllSourcePositions };
   enum EnableScheduling { kDisableScheduling, kEnableScheduling };
-  enum EnableSerialization { kDisableSerialization, kEnableSerialization };
+  enum EnableRootsRelativeAddressing {
+    kDisableRootsRelativeAddressing,
+    kEnableRootsRelativeAddressing
+  };
   enum EnableSwitchJumpTable {
     kDisableSwitchJumpTable,
     kEnableSwitchJumpTable
@@ -268,7 +271,8 @@ class V8_EXPORT_PRIVATE InstructionSelector final {
       EnableScheduling enable_scheduling = FLAG_turbo_instruction_scheduling
                                                ? kEnableScheduling
                                                : kDisableScheduling,
-      EnableSerialization enable_serialization = kDisableSerialization,
+      EnableRootsRelativeAddressing enable_roots_relative_addressing =
+          kDisableRootsRelativeAddressing,
       PoisoningMitigationLevel poisoning_level =
           PoisoningMitigationLevel::kDontPoison,
       EnableTraceTurboJson trace_turbo = kDisableTraceTurboJson);
@@ -433,8 +437,7 @@ class V8_EXPORT_PRIVATE InstructionSelector final {
   const std::map<NodeId, int> GetVirtualRegistersForTesting() const;
 
   // Check if we can generate loads and stores of ExternalConstants relative
-  // to the roots register, i.e. if both a root register is available for this
-  // compilation unit and the serializer is disabled.
+  // to the roots register.
   bool CanAddressRelativeToRootsRegister() const;
   // Check if we can use the roots register to access GC roots.
   bool CanUseRootsRegister() const;
@@ -443,6 +446,30 @@ class V8_EXPORT_PRIVATE InstructionSelector final {
 
   const ZoneVector<std::pair<int, int>>& instr_origins() const {
     return instr_origins_;
+  }
+
+  // Expose these SIMD helper functions for testing.
+  static bool TryMatchIdentityForTesting(const uint8_t* shuffle) {
+    return TryMatchIdentity(shuffle);
+  }
+  template <int LANES>
+  static bool TryMatchDupForTesting(const uint8_t* shuffle, int* index) {
+    return TryMatchDup<LANES>(shuffle, index);
+  }
+  static bool TryMatch32x4ShuffleForTesting(const uint8_t* shuffle,
+                                            uint8_t* shuffle32x4) {
+    return TryMatch32x4Shuffle(shuffle, shuffle32x4);
+  }
+  static bool TryMatch16x8ShuffleForTesting(const uint8_t* shuffle,
+                                            uint8_t* shuffle16x8) {
+    return TryMatch16x8Shuffle(shuffle, shuffle16x8);
+  }
+  static bool TryMatchConcatForTesting(const uint8_t* shuffle,
+                                       uint8_t* offset) {
+    return TryMatchConcat(shuffle, offset);
+  }
+  static bool TryMatchBlendForTesting(const uint8_t* shuffle) {
+    return TryMatchBlend(shuffle);
   }
 
  private:
@@ -604,6 +631,11 @@ class V8_EXPORT_PRIVATE InstructionSelector final {
   // ============= Vector instruction (SIMD) helper fns. =======================
   // ===========================================================================
 
+  // Tries to match an 8x16 byte shuffle to the identity shuffle, which is
+  // [0 1 ... 15]. This should be called after canonicalizing the shuffle, so
+  // the second identity shuffle, [16 17 .. 31] is converted to the first one.
+  static bool TryMatchIdentity(const uint8_t* shuffle);
+
   // Tries to match a byte shuffle to a scalar splat operation. Returns the
   // index of the lane if successful.
   template <int LANES>
@@ -706,7 +738,7 @@ class V8_EXPORT_PRIVATE InstructionSelector final {
   IntVector virtual_register_rename_;
   InstructionScheduler* scheduler_;
   EnableScheduling enable_scheduling_;
-  EnableSerialization enable_serialization_;
+  EnableRootsRelativeAddressing enable_roots_relative_addressing_;
   EnableSwitchJumpTable enable_switch_jump_table_;
 
   PoisoningMitigationLevel poisoning_level_;

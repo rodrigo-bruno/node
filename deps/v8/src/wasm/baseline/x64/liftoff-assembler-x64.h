@@ -115,20 +115,21 @@ inline void SpillRegisters(LiftoffAssembler* assm, Regs... regs) {
 
 }  // namespace liftoff
 
-uint32_t LiftoffAssembler::PrepareStackFrame() {
-  uint32_t offset = static_cast<uint32_t>(pc_offset());
+int LiftoffAssembler::PrepareStackFrame() {
+  int offset = pc_offset();
   sub_sp_32(0);
   return offset;
 }
 
-void LiftoffAssembler::PatchPrepareStackFrame(uint32_t offset,
+void LiftoffAssembler::PatchPrepareStackFrame(int offset,
                                               uint32_t stack_slots) {
   uint32_t bytes = liftoff::kConstantStackSpace + kStackSlotSize * stack_slots;
   DCHECK_LE(bytes, kMaxInt);
   // We can't run out of space, just pass anything big enough to not cause the
   // assembler to try to grow the buffer.
   constexpr int kAvailableSpace = 64;
-  Assembler patching_assembler(isolate(), buffer_ + offset, kAvailableSpace);
+  Assembler patching_assembler(Assembler::Options{}, buffer_ + offset,
+                               kAvailableSpace);
   patching_assembler.sub_sp_32(bytes);
 }
 
@@ -1306,10 +1307,8 @@ void LiftoffAssembler::emit_f64_set_cond(Condition cond, Register dst,
                                                       rhs);
 }
 
-void LiftoffAssembler::StackCheck(Label* ool_code) {
-  Operand stack_limit = ExternalOperand(
-      ExternalReference::address_of_stack_limit(isolate()), kScratchRegister);
-  cmpp(rsp, stack_limit);
+void LiftoffAssembler::StackCheck(Label* ool_code, Register limit_address) {
+  cmpp(rsp, Operand(limit_address, 0));
   j(below_equal, ool_code);
 }
 

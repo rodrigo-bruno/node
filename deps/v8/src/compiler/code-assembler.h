@@ -278,7 +278,8 @@ HEAP_OBJECT_TEMPLATE_TYPE_LIST(OBJECT_TYPE_TEMPLATE_CASE)
 #undef OBJECT_TYPE_STRUCT_CASE
 #undef OBJECT_TYPE_TEMPLATE_CASE
 
-Smi* CheckObjectType(Object* value, Smi* type, String* location);
+Smi* CheckObjectType(Isolate* isolate, Object* value, Smi* type,
+                     String* location);
 
 namespace compiler {
 
@@ -621,10 +622,12 @@ class V8_EXPORT_PRIVATE CodeAssembler {
         }
         Node* function = code_assembler_->ExternalConstant(
             ExternalReference::check_object_type());
-        code_assembler_->CallCFunction3(
-            MachineType::AnyTagged(), MachineType::AnyTagged(),
-            MachineType::TaggedSigned(), MachineType::AnyTagged(), function,
-            node_,
+        Node* const isolate_ptr = code_assembler_->ExternalConstant(
+            ExternalReference::isolate_address(code_assembler_->isolate()));
+        code_assembler_->CallCFunction4(
+            MachineType::AnyTagged(), MachineType::Pointer(),
+            MachineType::AnyTagged(), MachineType::TaggedSigned(),
+            MachineType::AnyTagged(), function, isolate_ptr, node_,
             code_assembler_->SmiConstant(
                 static_cast<int>(ObjectTypeOf<A>::value)),
             code_assembler_->StringConstant(location_));
@@ -738,6 +741,8 @@ class V8_EXPORT_PRIVATE CodeAssembler {
     return UncheckedCast<UintPtrT>(x);
   }
 
+  static constexpr int kTargetParameterIndex = -1;
+
   Node* Parameter(int value);
 
   TNode<Context> GetJSContextParameter();
@@ -748,6 +753,8 @@ class V8_EXPORT_PRIVATE CodeAssembler {
   void PopAndReturn(Node* pop, Node* value);
 
   void ReturnIf(Node* condition, Node* value);
+
+  void ReturnRaw(Node* value);
 
   void DebugAbort(Node* message);
   void DebugBreak();
@@ -988,6 +995,14 @@ class V8_EXPORT_PRIVATE CodeAssembler {
   }
 
   template <class... TArgs>
+  TNode<Object> CallRuntimeWithCEntry(Runtime::FunctionId function,
+                                      TNode<Code> centry,
+                                      SloppyTNode<Object> context,
+                                      TArgs... args) {
+    return CallRuntimeWithCEntryImpl(function, centry, context, {args...});
+  }
+
+  template <class... TArgs>
   void TailCallRuntime(Runtime::FunctionId function,
                        SloppyTNode<Object> context, TArgs... args) {
     int argc = static_cast<int>(sizeof...(args));
@@ -1007,7 +1022,7 @@ class V8_EXPORT_PRIVATE CodeAssembler {
   void TailCallRuntimeWithCEntry(Runtime::FunctionId function,
                                  TNode<Code> centry, TNode<Object> context,
                                  TArgs... args) {
-    int argc = static_cast<int>(sizeof...(args));
+    int argc = sizeof...(args);
     TNode<Int32T> arity = Int32Constant(argc);
     return TailCallRuntimeWithCEntryImpl(
         function, arity, centry, context,
@@ -1040,8 +1055,7 @@ class V8_EXPORT_PRIVATE CodeAssembler {
   }
 
   Node* CallStubN(const CallInterfaceDescriptor& descriptor, size_t result_size,
-                  int input_count, Node* const* inputs,
-                  bool pass_context = true);
+                  int input_count, Node* const* inputs);
 
   template <class... TArgs>
   void TailCallStub(Callable const& callable, SloppyTNode<Object> context,
@@ -1188,10 +1202,16 @@ class V8_EXPORT_PRIVATE CodeAssembler {
   bool Word32ShiftIsSafe() const;
   PoisoningMitigationLevel poisoning_level() const;
 
+  bool IsJSFunctionCall() const;
+
  private:
   TNode<Object> CallRuntimeImpl(Runtime::FunctionId function,
                                 TNode<Object> context,
                                 std::initializer_list<TNode<Object>> args);
+
+  TNode<Object> CallRuntimeWithCEntryImpl(
+      Runtime::FunctionId function, TNode<Code> centry, TNode<Object> context,
+      std::initializer_list<TNode<Object>> args);
 
   void TailCallRuntimeImpl(Runtime::FunctionId function, TNode<Int32T> arity,
                            TNode<Object> context,
@@ -1359,7 +1379,7 @@ class V8_EXPORT_PRIVATE CodeAssemblerState {
   CodeAssemblerState(Isolate* isolate, Zone* zone,
                      const CallInterfaceDescriptor& descriptor, Code::Kind kind,
                      const char* name, PoisoningMitigationLevel poisoning_level,
-                     size_t result_size = 1, uint32_t stub_key = 0,
+                     uint32_t stub_key = 0,
                      int32_t builtin_index = Builtins::kNoBuiltinId);
 
   // Create with JSCall linkage.

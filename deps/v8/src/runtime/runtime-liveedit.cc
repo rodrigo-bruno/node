@@ -20,7 +20,6 @@ namespace internal {
 // in OpaqueReferences.
 RUNTIME_FUNCTION(Runtime_LiveEditFindSharedFunctionInfosForScript) {
   HandleScope scope(isolate);
-  CHECK(isolate->debug()->live_edit_enabled());
   DCHECK_EQ(1, args.length());
   CONVERT_ARG_CHECKED(JSValue, script_value, 0);
 
@@ -63,7 +62,6 @@ RUNTIME_FUNCTION(Runtime_LiveEditFindSharedFunctionInfosForScript) {
 // with the function itself going first. The root function is a script function.
 RUNTIME_FUNCTION(Runtime_LiveEditGatherCompileInfo) {
   HandleScope scope(isolate);
-  CHECK(isolate->debug()->live_edit_enabled());
   DCHECK_EQ(2, args.length());
   CONVERT_ARG_CHECKED(JSValue, script, 0);
   CONVERT_ARG_HANDLE_CHECKED(String, source, 1);
@@ -71,8 +69,8 @@ RUNTIME_FUNCTION(Runtime_LiveEditGatherCompileInfo) {
   CHECK(script->value()->IsScript());
   Handle<Script> script_handle(Script::cast(script->value()), isolate);
 
-  RETURN_RESULT_OR_FAILURE(isolate,
-                           LiveEdit::GatherCompileInfo(script_handle, source));
+  RETURN_RESULT_OR_FAILURE(
+      isolate, LiveEdit::GatherCompileInfo(isolate, script_handle, source));
 }
 
 
@@ -81,17 +79,17 @@ RUNTIME_FUNCTION(Runtime_LiveEditGatherCompileInfo) {
 // the script with its original source and sends notification to debugger.
 RUNTIME_FUNCTION(Runtime_LiveEditReplaceScript) {
   HandleScope scope(isolate);
-  CHECK(isolate->debug()->live_edit_enabled());
   DCHECK_EQ(3, args.length());
   CONVERT_ARG_CHECKED(JSValue, original_script_value, 0);
   CONVERT_ARG_HANDLE_CHECKED(String, new_source, 1);
   CONVERT_ARG_HANDLE_CHECKED(Object, old_script_name, 2);
 
   CHECK(original_script_value->value()->IsScript());
-  Handle<Script> original_script(Script::cast(original_script_value->value()));
+  Handle<Script> original_script(Script::cast(original_script_value->value()),
+                                 isolate);
 
   Handle<Object> old_script = LiveEdit::ChangeScriptSource(
-      original_script, new_source, old_script_name);
+      isolate, original_script, new_source, old_script_name);
 
   if (old_script->IsScript()) {
     Handle<Script> script_handle = Handle<Script>::cast(old_script);
@@ -105,21 +103,19 @@ RUNTIME_FUNCTION(Runtime_LiveEditReplaceScript) {
 // SharedFunctionInfos.
 RUNTIME_FUNCTION(Runtime_LiveEditFixupScript) {
   HandleScope scope(isolate);
-  CHECK(isolate->debug()->live_edit_enabled());
   DCHECK_EQ(args.length(), 2);
   CONVERT_ARG_CHECKED(JSValue, script_value, 0);
   CONVERT_INT32_ARG_CHECKED(max_function_literal_id, 1);
 
   CHECK(script_value->value()->IsScript());
-  Handle<Script> script(Script::cast(script_value->value()));
+  Handle<Script> script(Script::cast(script_value->value()), isolate);
 
-  LiveEdit::FixupScript(script, max_function_literal_id);
+  LiveEdit::FixupScript(isolate, script, max_function_literal_id);
   return isolate->heap()->undefined_value();
 }
 
 RUNTIME_FUNCTION(Runtime_LiveEditFunctionSourceUpdated) {
   HandleScope scope(isolate);
-  CHECK(isolate->debug()->live_edit_enabled());
   DCHECK_EQ(args.length(), 2);
   CONVERT_ARG_HANDLE_CHECKED(JSArray, shared_info, 0);
   CONVERT_INT32_ARG_CHECKED(new_function_literal_id, 1);
@@ -133,7 +129,6 @@ RUNTIME_FUNCTION(Runtime_LiveEditFunctionSourceUpdated) {
 // Replaces code of SharedFunctionInfo with a new one.
 RUNTIME_FUNCTION(Runtime_LiveEditReplaceFunctionCode) {
   HandleScope scope(isolate);
-  CHECK(isolate->debug()->live_edit_enabled());
   DCHECK_EQ(2, args.length());
   CONVERT_ARG_HANDLE_CHECKED(JSArray, new_compile_info, 0);
   CONVERT_ARG_HANDLE_CHECKED(JSArray, shared_info, 1);
@@ -147,7 +142,6 @@ RUNTIME_FUNCTION(Runtime_LiveEditReplaceFunctionCode) {
 // Connects SharedFunctionInfo to another script.
 RUNTIME_FUNCTION(Runtime_LiveEditFunctionSetScript) {
   HandleScope scope(isolate);
-  CHECK(isolate->debug()->live_edit_enabled());
   DCHECK_EQ(2, args.length());
   CONVERT_ARG_HANDLE_CHECKED(Object, function_object, 0);
   CONVERT_ARG_HANDLE_CHECKED(Object, script_object, 1);
@@ -174,7 +168,6 @@ RUNTIME_FUNCTION(Runtime_LiveEditFunctionSetScript) {
 // with a substitution one.
 RUNTIME_FUNCTION(Runtime_LiveEditReplaceRefToNestedFunction) {
   HandleScope scope(isolate);
-  CHECK(isolate->debug()->live_edit_enabled());
   DCHECK_EQ(3, args.length());
 
   CONVERT_ARG_HANDLE_CHECKED(JSValue, parent_wrapper, 0);
@@ -197,7 +190,6 @@ RUNTIME_FUNCTION(Runtime_LiveEditReplaceRefToNestedFunction) {
 // Each group describes a change in text; groups are sorted by change_begin.
 RUNTIME_FUNCTION(Runtime_LiveEditPatchFunctionPositions) {
   HandleScope scope(isolate);
-  CHECK(isolate->debug()->live_edit_enabled());
   DCHECK_EQ(2, args.length());
   CONVERT_ARG_HANDLE_CHECKED(JSArray, shared_array, 0);
   CONVERT_ARG_HANDLE_CHECKED(JSArray, position_change_array, 1);
@@ -214,7 +206,6 @@ RUNTIME_FUNCTION(Runtime_LiveEditPatchFunctionPositions) {
 // LiveEdit::FunctionPatchabilityStatus type.
 RUNTIME_FUNCTION(Runtime_LiveEditCheckAndDropActivations) {
   HandleScope scope(isolate);
-  CHECK(isolate->debug()->live_edit_enabled());
   DCHECK_EQ(3, args.length());
   CONVERT_ARG_HANDLE_CHECKED(JSArray, old_shared_array, 0);
   CONVERT_ARG_HANDLE_CHECKED(JSArray, new_shared_array, 1);
@@ -252,12 +243,11 @@ RUNTIME_FUNCTION(Runtime_LiveEditCheckAndDropActivations) {
 // of diff chunks.
 RUNTIME_FUNCTION(Runtime_LiveEditCompareStrings) {
   HandleScope scope(isolate);
-  CHECK(isolate->debug()->live_edit_enabled());
   DCHECK_EQ(2, args.length());
   CONVERT_ARG_HANDLE_CHECKED(String, s1, 0);
   CONVERT_ARG_HANDLE_CHECKED(String, s2, 1);
 
-  Handle<JSArray> result = LiveEdit::CompareStrings(s1, s2);
+  Handle<JSArray> result = LiveEdit::CompareStrings(isolate, s1, s2);
   uint32_t array_length = 0;
   CHECK(result->length()->ToArrayLength(&array_length));
   if (array_length > 0) {

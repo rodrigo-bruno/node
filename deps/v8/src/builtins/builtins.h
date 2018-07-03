@@ -100,7 +100,7 @@ class Builtins {
   bool IsBuiltinHandle(Handle<HeapObject> maybe_code, int* index) const;
 
   // True, iff the given code object is a builtin with off-heap embedded code.
-  static bool IsEmbeddedBuiltin(const Code* code);
+  static bool IsIsolateIndependentBuiltin(const Code* code);
 
   // Returns true iff the given builtin can be lazy-loaded from the snapshot.
   // This is true in general for most builtins with the exception of a few
@@ -136,13 +136,11 @@ class Builtins {
   static bool AllowDynamicFunction(Isolate* isolate, Handle<JSFunction> target,
                                    Handle<JSObject> target_global_proxy);
 
-#ifdef V8_EMBEDDED_BUILTINS
   // Creates a trampoline code object that jumps to the given off-heap entry.
   // The result should not be used directly, but only from the related Factory
   // function.
   static Handle<Code> GenerateOffHeapTrampolineFor(Isolate* isolate,
                                                    Address off_heap_entry);
-#endif
 
  private:
   static void Generate_CallFunction(MacroAssembler* masm,

@@ -60,7 +60,7 @@ bool IsWasmInstantiateAllowed(v8::Isolate* isolate,
   }
   v8::Local<v8::WasmCompiledModule> module =
       v8::Local<v8::WasmCompiledModule>::Cast(module_or_bytes);
-  return static_cast<uint32_t>(module->GetWasmWireBytes()->Length()) <=
+  return static_cast<uint32_t>(module->GetWasmWireBytesRef().size) <=
          ctrls.MaxWasmBufferSize;
 }
 
@@ -550,7 +550,7 @@ RUNTIME_FUNCTION(Runtime_DebugPrint) {
       DCHECK(!weak);
       // If we have a string, assume it's a code "marker"
       // and print some interesting cpu debugging info.
-      object->Print(os);
+      object->Print(isolate, os);
       JavaScriptFrameIterator it(isolate);
       JavaScriptFrame* frame = it.frame();
       os << "fp = " << reinterpret_cast<void*>(frame->fp())
@@ -562,10 +562,10 @@ RUNTIME_FUNCTION(Runtime_DebugPrint) {
       if (weak) {
         os << "[weak] ";
       }
-      object->Print(os);
+      object->Print(isolate, os);
     }
     if (object->IsHeapObject()) {
-      HeapObject::cast(object)->map()->Print(os);
+      HeapObject::cast(object)->map()->Print(isolate, os);
     }
 #else
     if (weak) {
@@ -725,7 +725,7 @@ RUNTIME_FUNCTION(Runtime_DisassembleFunction) {
     return isolate->heap()->exception();
   }
   StdoutStream os;
-  func->code()->Print(os);
+  func->code()->Print(isolate, os);
   os << std::endl;
 #endif  // DEBUG
   return isolate->heap()->undefined_value();
@@ -909,8 +909,7 @@ RUNTIME_FUNCTION(Runtime_SerializeWasmModule) {
   DCHECK_EQ(1, args.length());
   CONVERT_ARG_HANDLE_CHECKED(WasmModuleObject, module_obj, 0);
 
-  wasm::NativeModule* native_module =
-      module_obj->compiled_module()->GetNativeModule();
+  wasm::NativeModule* native_module = module_obj->native_module();
   size_t compiled_size =
       wasm::GetSerializedNativeModuleSize(isolate, native_module);
   void* array_data = isolate->array_buffer_allocator()->Allocate(compiled_size);
@@ -960,30 +959,12 @@ RUNTIME_FUNCTION(Runtime_DeserializeWasmModule) {
   return *module_object;
 }
 
-RUNTIME_FUNCTION(Runtime_ValidateWasmInstancesChain) {
-  HandleScope shs(isolate);
-  DCHECK_EQ(2, args.length());
-  CONVERT_ARG_HANDLE_CHECKED(WasmModuleObject, module_obj, 0);
-  CONVERT_ARG_HANDLE_CHECKED(Smi, instance_count, 1);
-  WasmInstanceObject::ValidateInstancesChainForTesting(isolate, module_obj,
-                                                       instance_count->value());
-  return isolate->heap()->ToBoolean(true);
-}
-
-RUNTIME_FUNCTION(Runtime_ValidateWasmModuleState) {
-  HandleScope shs(isolate);
-  DCHECK_EQ(1, args.length());
-  CONVERT_ARG_HANDLE_CHECKED(WasmModuleObject, module_obj, 0);
-  WasmModuleObject::ValidateStateForTesting(isolate, module_obj);
-  return isolate->heap()->ToBoolean(true);
-}
-
 RUNTIME_FUNCTION(Runtime_HeapObjectVerify) {
   HandleScope shs(isolate);
   DCHECK_EQ(1, args.length());
   CONVERT_ARG_HANDLE_CHECKED(Object, object, 0);
 #ifdef VERIFY_HEAP
-  object->ObjectVerify();
+  object->ObjectVerify(isolate);
 #else
   CHECK(object->IsObject());
   if (object->IsHeapObject()) {
@@ -993,6 +974,18 @@ RUNTIME_FUNCTION(Runtime_HeapObjectVerify) {
   }
 #endif
   return isolate->heap()->ToBoolean(true);
+}
+
+RUNTIME_FUNCTION(Runtime_WasmGetNumberOfInstances) {
+  SealHandleScope shs(isolate);
+  DCHECK_EQ(1, args.length());
+  CONVERT_ARG_HANDLE_CHECKED(WasmModuleObject, module_obj, 0);
+  int instance_count = 0;
+  WeakArrayList* weak_instance_list = module_obj->weak_instance_list();
+  for (int i = 0; i < weak_instance_list->length(); ++i) {
+    if (weak_instance_list->Get(i)->IsWeakHeapObject()) instance_count++;
+  }
+  return Smi::FromInt(instance_count);
 }
 
 RUNTIME_FUNCTION(Runtime_WasmNumInterpretedCalls) {
@@ -1053,7 +1046,7 @@ RUNTIME_FUNCTION(Runtime_IsLiftoffFunction) {
   Handle<WasmExportedFunction> exp_fun =
       Handle<WasmExportedFunction>::cast(function);
   wasm::NativeModule* native_module =
-      exp_fun->instance()->compiled_module()->GetNativeModule();
+      exp_fun->instance()->module_object()->native_module();
   uint32_t func_index = exp_fun->function_index();
   return isolate->heap()->ToBoolean(
       native_module->has_code(func_index) &&
@@ -1065,7 +1058,7 @@ RUNTIME_FUNCTION(Runtime_CompleteInobjectSlackTracking) {
   DCHECK_EQ(1, args.length());
 
   CONVERT_ARG_HANDLE_CHECKED(JSObject, object, 0);
-  object->map()->CompleteInobjectSlackTracking();
+  object->map()->CompleteInobjectSlackTracking(isolate);
 
   return isolate->heap()->undefined_value();
 }
@@ -1075,7 +1068,7 @@ RUNTIME_FUNCTION(Runtime_FreezeWasmLazyCompilation) {
   DisallowHeapAllocation no_gc;
   CONVERT_ARG_CHECKED(WasmInstanceObject, instance, 0);
 
-  instance->compiled_module()->GetNativeModule()->set_lazy_compile_frozen(true);
+  instance->module_object()->native_module()->set_lazy_compile_frozen(true);
   return isolate->heap()->undefined_value();
 }
 
