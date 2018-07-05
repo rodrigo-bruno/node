@@ -37,7 +37,8 @@ namespace v8 {
 namespace internal {
 
 void SourceCodeCache::Initialize(Isolate* isolate, bool create_heap_objects) {
-  cache_ = create_heap_objects ? isolate->heap()->empty_fixed_array() : nullptr;
+  cache_ = create_heap_objects ? ReadOnlyRoots(isolate).empty_fixed_array()
+                               : nullptr;
 }
 
 bool SourceCodeCache::Lookup(Isolate* isolate, Vector<const char> name,
@@ -80,7 +81,6 @@ Handle<String> Bootstrapper::GetNativeSource(NativeType type, int index) {
       new NativesExternalStringResource(type, index);
   Handle<ExternalOneByteString> source_code =
       isolate_->factory()->NewNativeSourceString(resource);
-  isolate_->heap()->RegisterExternalString(*source_code);
   DCHECK(source_code->is_short());
   return source_code;
 }
@@ -349,12 +349,12 @@ void Bootstrapper::DetachGlobal(Handle<Context> env) {
   isolate_->counters()->errors_thrown_per_context()->AddSample(
       env->GetErrorsThrown());
 
-  Heap* heap = isolate_->heap();
+  ReadOnlyRoots roots(isolate_);
   Handle<JSGlobalProxy> global_proxy(JSGlobalProxy::cast(env->global_proxy()),
                                      isolate_);
-  global_proxy->set_native_context(heap->null_value());
+  global_proxy->set_native_context(roots.null_value());
   JSObject::ForceSetPrototype(global_proxy, isolate_->factory()->null_value());
-  global_proxy->map()->SetConstructor(heap->null_value());
+  global_proxy->map()->SetConstructor(roots.null_value());
   if (FLAG_track_detached_contexts) {
     isolate_->AddDetachedContext(env);
   }
@@ -1730,8 +1730,6 @@ void Genesis::InitializeGlobal(Handle<JSGlobalObject> global_object,
                           1, false);
     SimpleInstallFunction(isolate_, proto, "slice",
                           Builtins::kArrayPrototypeSlice, 2, false);
-    SimpleInstallFunction(isolate_, proto, "sort",
-                          Builtins::kArrayPrototypeSort, 1, false);
     if (FLAG_enable_experimental_builtins) {
       SimpleInstallFunction(isolate_, proto, "splice",
                             Builtins::kArraySpliceTorque, 2, false);
@@ -1927,7 +1925,7 @@ void Genesis::InitializeGlobal(Handle<JSGlobalObject> global_object,
     // Create the %BooleanPrototype%
     Handle<JSValue> prototype =
         Handle<JSValue>::cast(factory->NewJSObject(boolean_fun, TENURED));
-    prototype->set_value(isolate_->heap()->false_value());
+    prototype->set_value(ReadOnlyRoots(isolate_).false_value());
     JSFunction::SetPrototype(boolean_fun, prototype);
 
     // Install the "constructor" property on the {prototype}.
@@ -1980,7 +1978,7 @@ void Genesis::InitializeGlobal(Handle<JSGlobalObject> global_object,
     // Create the %StringPrototype%
     Handle<JSValue> prototype =
         Handle<JSValue>::cast(factory->NewJSObject(string_fun, TENURED));
-    prototype->set_value(isolate_->heap()->empty_string());
+    prototype->set_value(ReadOnlyRoots(isolate_).empty_string());
     JSFunction::SetPrototype(string_fun, prototype);
     native_context()->set_initial_string_prototype(*prototype);
 
@@ -3895,8 +3893,9 @@ void Genesis::ConfigureUtilsObject(GlobalContextType context_type) {
   }
 
   // The utils object can be removed for cases that reach this point.
-  native_context()->set_natives_utils_object(heap()->undefined_value());
-  native_context()->set_extras_utils_object(heap()->undefined_value());
+  HeapObject* undefined = ReadOnlyRoots(heap()).undefined_value();
+  native_context()->set_natives_utils_object(undefined);
+  native_context()->set_extras_utils_object(undefined);
 }
 
 
@@ -4923,7 +4922,7 @@ bool Genesis::InstallNatives(GlobalContextType context_type) {
     CHECK(proto->HasSmiOrObjectElements());
     // This is necessary to enable fast checks for absence of elements
     // on Array.prototype and below.
-    proto->set_elements(heap()->empty_fixed_array());
+    proto->set_elements(ReadOnlyRoots(heap()).empty_fixed_array());
   }
 
   // Install InternalArray.prototype.concat
@@ -5689,7 +5688,7 @@ Genesis::Genesis(
 
   if (FLAG_disallow_code_generation_from_strings) {
     native_context()->set_allow_code_gen_from_strings(
-        isolate->heap()->false_value());
+        ReadOnlyRoots(isolate).false_value());
   }
 
   ConfigureUtilsObject(context_type);
@@ -5745,7 +5744,7 @@ Genesis::Genesis(Isolate* isolate,
   global_proxy_map->set_may_have_interesting_symbols(true);
 
   // A remote global proxy has no native context.
-  global_proxy->set_native_context(heap()->null_value());
+  global_proxy->set_native_context(ReadOnlyRoots(heap()).null_value());
 
   // Configure the hidden prototype chain of the global proxy.
   JSObject::ForceSetPrototype(global_proxy, global_object);

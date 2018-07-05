@@ -50,13 +50,13 @@ INT_ACCESSORS(SharedFunctionInfo, unique_id, kUniqueIdOffset)
 UINT16_ACCESSORS(SharedFunctionInfo, length, kLengthOffset)
 UINT16_ACCESSORS(SharedFunctionInfo, internal_formal_parameter_count,
                  kFormalParameterCountOffset)
-INT_ACCESSORS(SharedFunctionInfo, expected_nof_properties,
-              kExpectedNofPropertiesOffset)
+UINT16_ACCESSORS(SharedFunctionInfo, expected_nof_properties,
+                 kExpectedNofPropertiesOffset)
+UINT16_ACCESSORS(SharedFunctionInfo, raw_function_token_offset,
+                 kFunctionTokenOffsetOffset)
 INT_ACCESSORS(SharedFunctionInfo, raw_end_position, kEndPositionOffset)
 INT_ACCESSORS(SharedFunctionInfo, raw_start_position_and_type,
               kStartPositionAndTypeOffset)
-INT_ACCESSORS(SharedFunctionInfo, function_token_position,
-              kFunctionTokenPositionOffset)
 INT_ACCESSORS(SharedFunctionInfo, flags, kFlagsOffset)
 
 bool SharedFunctionInfo::HasSharedName() const {
@@ -68,13 +68,13 @@ bool SharedFunctionInfo::HasSharedName() const {
 }
 
 String* SharedFunctionInfo::Name() const {
-  if (!HasSharedName()) return GetHeap()->empty_string();
+  if (!HasSharedName()) return GetReadOnlyRoots().empty_string();
   Object* value = name_or_scope_info();
   if (value->IsScopeInfo()) {
     if (ScopeInfo::cast(value)->HasFunctionName()) {
       return String::cast(ScopeInfo::cast(value)->FunctionName());
     }
-    return GetHeap()->empty_string();
+    return GetReadOnlyRoots().empty_string();
   }
   return String::cast(value);
 }
@@ -96,6 +96,15 @@ AbstractCode* SharedFunctionInfo::abstract_code() {
     return AbstractCode::cast(GetBytecodeArray());
   } else {
     return AbstractCode::cast(GetCode());
+  }
+}
+
+int SharedFunctionInfo::function_token_position() const {
+  int offset = raw_function_token_offset();
+  if (offset == kFunctionTokenOutOfRange) {
+    return kNoSourcePosition;
+  } else {
+    return StartPosition() - offset;
   }
 }
 
@@ -580,7 +589,7 @@ String* SharedFunctionInfo::inferred_name() {
     return String::cast(function_identifier());
   }
   DCHECK(function_identifier()->IsUndefined() || HasBuiltinFunctionId());
-  return GetHeap()->empty_string();
+  return GetReadOnlyRoots().empty_string();
 }
 
 void SharedFunctionInfo::set_inferred_name(String* inferred_name) {
@@ -620,7 +629,7 @@ void SharedFunctionInfo::FlushCompiled() {
     if (scope_info()->HasOuterScopeInfo()) {
       outer_scope_info = scope_info()->OuterScopeInfo();
     } else {
-      outer_scope_info = GetIsolate()->heap()->the_hole_value();
+      outer_scope_info = GetReadOnlyRoots().the_hole_value();
     }
     // Raw setter to avoid validity checks, since we're performing the unusual
     // task of decompiling.

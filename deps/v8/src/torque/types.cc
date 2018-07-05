@@ -141,6 +141,19 @@ std::string UnionType::GetGeneratedTNodeTypeName() const {
   return parent()->GetGeneratedTNodeTypeName();
 }
 
+const Type* UnionType::NonConstexprVersion() const {
+  if (IsConstexpr()) {
+    auto it = types_.begin();
+    UnionType result((*it)->NonConstexprVersion());
+    ++it;
+    for (; it != types_.end(); ++it) {
+      result.Extend((*it)->NonConstexprVersion());
+    }
+    return TypeOracle::GetUnionType(std::move(result));
+  }
+  return this;
+}
+
 void PrintSignature(std::ostream& os, const Signature& sig, bool with_names) {
   os << "(";
   for (size_t i = 0; i < sig.parameter_types.types.size(); ++i) {
@@ -207,8 +220,8 @@ bool Signature::HasSameTypesAs(const Signature& other) const {
 
 bool IsAssignableFrom(const Type* to, const Type* from) {
   if (to == from) return true;
-  if (from->IsSubtypeOf(to) && !from->IsConstexpr()) return true;
-  return TypeOracle::IsImplicitlyConverableFrom(to, from);
+  if (from->IsSubtypeOf(to)) return true;
+  return TypeOracle::IsImplicitlyConvertableFrom(to, from);
 }
 
 bool IsCompatibleSignature(const Signature& sig, const TypeVector& types,
@@ -233,6 +246,15 @@ bool IsCompatibleSignature(const Signature& sig, const TypeVector& types,
 
 bool operator<(const Type& a, const Type& b) {
   return a.MangledName() < b.MangledName();
+}
+
+VisitResult::VisitResult(const Type* type, const Value* declarable)
+    : type_(type), value_(declarable->value()), declarable_(declarable) {}
+
+std::string VisitResult::LValue() const { return std::string("*") + value_; }
+
+std::string VisitResult::RValue() const {
+  return (declarable_) ? (*declarable_)->RValue() : value_;
 }
 
 }  // namespace torque

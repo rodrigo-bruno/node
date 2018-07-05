@@ -299,9 +299,7 @@ static void SanityCheck(v8::Isolate* v8_isolate) {
   isolate->factory()->InternalizeOneByteString(STATIC_CHAR_VECTOR("Empty"));
 }
 
-UNINITIALIZED_TEST(StartupSerializerOnce) {
-  DisableLazyDeserialization();
-  DisableAlwaysOpt();
+void TestStartupSerializerOnceImpl() {
   v8::Isolate* isolate = TestIsolate::NewInitialized();
   StartupBlobs blobs = Serialize(isolate);
   isolate->Dispose();
@@ -317,6 +315,40 @@ UNINITIALIZED_TEST(StartupSerializerOnce) {
   }
   isolate->Dispose();
   blobs.Dispose();
+}
+
+UNINITIALIZED_TEST(StartupSerializerOnce) {
+  DisableLazyDeserialization();
+  DisableAlwaysOpt();
+  TestStartupSerializerOnceImpl();
+}
+
+UNINITIALIZED_TEST(StartupSerializerOnce32) {
+  DisableLazyDeserialization();
+  DisableAlwaysOpt();
+  FLAG_serialization_chunk_size = 32;
+  TestStartupSerializerOnceImpl();
+}
+
+UNINITIALIZED_TEST(StartupSerializerOnce1K) {
+  DisableLazyDeserialization();
+  DisableAlwaysOpt();
+  FLAG_serialization_chunk_size = 1 * KB;
+  TestStartupSerializerOnceImpl();
+}
+
+UNINITIALIZED_TEST(StartupSerializerOnce4K) {
+  DisableLazyDeserialization();
+  DisableAlwaysOpt();
+  FLAG_serialization_chunk_size = 4 * KB;
+  TestStartupSerializerOnceImpl();
+}
+
+UNINITIALIZED_TEST(StartupSerializerOnce32K) {
+  DisableLazyDeserialization();
+  DisableAlwaysOpt();
+  FLAG_serialization_chunk_size = 32 * KB;
+  TestStartupSerializerOnceImpl();
 }
 
 UNINITIALIZED_TEST(StartupSerializerRootMapDependencies) {
@@ -340,7 +372,7 @@ UNINITIALIZED_TEST(StartupSerializerRootMapDependencies) {
     // platforms. So, without special measures we're risking to serialize
     // object, requiring alignment before FreeSpaceMap is fully serialized.
     v8::internal::Handle<Map> map(
-        internal_isolate->heap()->one_byte_internalized_string_map(),
+        ReadOnlyRoots(internal_isolate).one_byte_internalized_string_map(),
         internal_isolate);
     Map::WeakCellForMap(internal_isolate, map);
     // Need to avoid DCHECKs inside SnapshotCreator.
@@ -1845,6 +1877,11 @@ TEST(CodeSerializerExternalString) {
 
   CHECK_EQ(15.0, copy_result->Number());
 
+  // This avoids the GC from trying to free stack allocated resources.
+  i::Handle<i::ExternalOneByteString>::cast(one_byte_string)
+      ->set_resource(nullptr);
+  i::Handle<i::ExternalTwoByteString>::cast(two_byte_string)
+      ->set_resource(nullptr);
   delete cache;
 }
 
@@ -1901,6 +1938,8 @@ TEST(CodeSerializerLargeExternalString) {
 
   CHECK_EQ(42.0, copy_result->Number());
 
+  // This avoids the GC from trying to free stack allocated resources.
+  i::Handle<i::ExternalOneByteString>::cast(name)->set_resource(nullptr);
   delete cache;
   string.Dispose();
 }
@@ -1950,6 +1989,8 @@ TEST(CodeSerializerExternalScriptName) {
 
   CHECK_EQ(10.0, copy_result->Number());
 
+  // This avoids the GC from trying to free stack allocated resources.
+  i::Handle<i::ExternalOneByteString>::cast(name)->set_resource(nullptr);
   delete cache;
 }
 

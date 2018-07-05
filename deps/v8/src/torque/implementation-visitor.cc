@@ -27,6 +27,8 @@ VisitResult ImplementationVisitor::Visit(Expression* expr) {
 
 const Type* ImplementationVisitor::Visit(Statement* stmt) {
   CurrentSourcePosition::Scope scope(stmt->pos);
+  GenerateIndent();
+  source_out() << "// " << CurrentPositionAsString() << "\n";
   switch (stmt->kind) {
 #define ENUM_ITEM(name)        \
   case AstNode::Kind::k##name: \
@@ -183,19 +185,8 @@ void ImplementationVisitor::Visit(TorqueMacroDeclaration* decl,
 
     const Variable* result_var = nullptr;
     if (macro->HasReturnValue()) {
-      const Type* return_type = macro->signature().return_type;
-      if (!return_type->IsConstexpr()) {
-        GenerateIndent();
-        source_out() << "Node* return_default = &*SmiConstant(0);" << std::endl;
-      }
-      VisitResult init = {return_type,
-                          return_type->IsConstexpr()
-                              ? (return_type->GetGeneratedTypeName() + "()")
-                              : (std::string("UncheckedCast<") +
-                                 return_type->GetGeneratedTNodeTypeName() +
-                                 ">(return_default)")};
       result_var =
-          GenerateVariableDeclaration(decl, kReturnValueVariable, {}, init);
+          GenerateVariableDeclaration(decl, kReturnValueVariable, {}, {});
     }
     Label* macro_end = declarations()->DeclareLabel("macro_end");
     GenerateLabelDefinition(macro_end, decl);
@@ -230,8 +221,9 @@ void ImplementationVisitor::Visit(TorqueMacroDeclaration* decl,
     }
     if (result_var != nullptr) {
       GenerateIndent();
-      source_out() << "return " << result_var->GetValueForRead() << ";"
-                   << std::endl;
+      source_out() << "return "
+                   << VisitResult(result_var->type(), result_var).RValue()
+                   << ";" << std::endl;
     }
     source_out() << "}" << std::endl << std::endl;
   }
@@ -250,18 +242,18 @@ void ImplementationVisitor::Visit(TorqueBuiltinDeclaration* decl,
   const Value* val =
       declarations()->LookupValue(decl->signature->parameters.names[0]);
   GenerateIndent();
-  source_out() << "TNode<Context> " << val->GetValueForDeclaration()
+  source_out() << "TNode<Context> " << val->value()
                << " = UncheckedCast<Context>(Parameter("
                << "Descriptor::kContext));" << std::endl;
   GenerateIndent();
-  source_out() << "USE(" << val->GetValueForDeclaration() << ");" << std::endl;
+  source_out() << "USE(" << val->value() << ");" << std::endl;
 
   size_t first = 1;
   if (builtin->IsVarArgsJavaScript()) {
     assert(decl->signature->parameters.has_varargs);
     Constant* arguments = Constant::cast(declarations()->LookupValue(
         decl->signature->parameters.arguments_variable));
-    std::string arguments_name = arguments->GetValueForDeclaration();
+    std::string arguments_name = arguments->value();
     GenerateIndent();
     source_out()
         << "Node* argc = Parameter(Descriptor::kJSActualArgumentsCount);"
@@ -273,15 +265,14 @@ void ImplementationVisitor::Visit(TorqueBuiltinDeclaration* decl,
     const Value* receiver =
         declarations()->LookupValue(decl->signature->parameters.names[1]);
     GenerateIndent();
-    source_out() << "TNode<Object> " << receiver->GetValueForDeclaration()
+    source_out() << "TNode<Object> " << receiver->value()
                  << " = arguments_impl.GetReceiver();" << std::endl;
     GenerateIndent();
     source_out() << "auto arguments = &arguments_impl;" << std::endl;
     GenerateIndent();
     source_out() << "USE(arguments);" << std::endl;
     GenerateIndent();
-    source_out() << "USE(" << receiver->GetValueForDeclaration() << ");"
-                 << std::endl;
+    source_out() << "USE(" << receiver->value() << ");" << std::endl;
     first = 2;
   }
 
@@ -319,7 +310,7 @@ VisitResult ImplementationVisitor::Visit(ConditionalExpression* expr) {
     source_out() << "" << std::endl;
     left = Visit(expr->if_true);
     GenerateIndent();
-    source_out() << "return " << left.variable() << ";" << std::endl;
+    source_out() << "return " << left.RValue() << ";" << std::endl;
   }
   source_out() << ";" << std::endl;
   GenerateIndent();
@@ -329,14 +320,13 @@ VisitResult ImplementationVisitor::Visit(ConditionalExpression* expr) {
     source_out() << "" << std::endl;
     right = Visit(expr->if_false);
     GenerateIndent();
-    source_out() << "return " << right.variable() << ";" << std::endl;
+    source_out() << "return " << right.RValue() << ";" << std::endl;
   }
   source_out() << ";" << std::endl;
 
   const Type* common_type = GetCommonType(left.type(), right.type());
   std::string result_var = NewTempVariable();
-  const Variable* result =
-      GenerateVariableDeclaration(expr, result_var, common_type);
+  Variable* result = GenerateVariableDeclaration(expr, result_var, common_type);
 
   {
     ScopedIndent indent(this);
@@ -357,19 +347,19 @@ VisitResult ImplementationVisitor::Visit(ConditionalExpression* expr) {
     }
     GenerateLabelBind(true_label);
     GenerateIndent();
-    source_out() << result->GetValueForWrite() << " = " << f1 << "();"
-                 << std::endl;
+    VisitResult left_result = {right.type(), f1 + "()"};
+    GenerateAssignToVariable(result, left_result);
     GenerateLabelGoto(done_label);
 
     GenerateLabelBind(false_label);
     GenerateIndent();
-    source_out() << result->GetValueForWrite() << " = " << f2 << "();"
-                 << std::endl;
+    VisitResult right_result = {right.type(), f2 + "()"};
+    GenerateAssignToVariable(result, right_result);
     GenerateLabelGoto(done_label);
 
     GenerateLabelBind(done_label);
   }
-  return VisitResult(common_type, result->GetValueForRead());
+  return VisitResult(common_type, result);
 }
 
 VisitResult ImplementationVisitor::Visit(LogicalOrExpression* expr) {
@@ -382,7 +372,7 @@ VisitResult ImplementationVisitor::Visit(LogicalOrExpression* expr) {
     if (left_result.type()->IsBool()) {
       Label* true_label = declarations()->LookupLabel(kTrueLabelName);
       GenerateIndent();
-      source_out() << "GotoIf(" << left_result.variable() << ", "
+      source_out() << "GotoIf(" << left_result.RValue() << ", "
                    << true_label->generated() << ");" << std::endl;
     } else if (!left_result.type()->IsConstexprBool()) {
       GenerateLabelBind(false_label);
@@ -398,8 +388,8 @@ VisitResult ImplementationVisitor::Visit(LogicalOrExpression* expr) {
   }
   if (left_result.type()->IsConstexprBool()) {
     return VisitResult(left_result.type(), std::string("(") +
-                                               left_result.variable() + " || " +
-                                               right_result.variable() + ")");
+                                               left_result.RValue() + " || " +
+                                               right_result.RValue() + ")");
   } else {
     return right_result;
   }
@@ -415,7 +405,7 @@ VisitResult ImplementationVisitor::Visit(LogicalAndExpression* expr) {
     if (left_result.type()->IsBool()) {
       Label* false_label = declarations()->LookupLabel(kFalseLabelName);
       GenerateIndent();
-      source_out() << "GotoIfNot(" << left_result.variable() << ", "
+      source_out() << "GotoIfNot(" << left_result.RValue() << ", "
                    << false_label->generated() << ");" << std::endl;
     } else if (!left_result.type()->IsConstexprBool()) {
       GenerateLabelBind(true_label);
@@ -431,8 +421,8 @@ VisitResult ImplementationVisitor::Visit(LogicalAndExpression* expr) {
   }
   if (left_result.type()->IsConstexprBool()) {
     return VisitResult(left_result.type(), std::string("(") +
-                                               left_result.variable() + " && " +
-                                               right_result.variable() + ")");
+                                               left_result.RValue() + " && " +
+                                               right_result.RValue() + ")");
   } else {
     return right_result;
   }
@@ -504,7 +494,7 @@ VisitResult ImplementationVisitor::GetBuiltinCode(Builtin* builtin) {
         "creating function pointers is only allowed for internal builtins with "
         "stub linkage");
   }
-  const Type* type = declarations()->GetFunctionPointerType(
+  const Type* type = TypeOracle::GetFunctionPointerType(
       builtin->signature().parameter_types.types,
       builtin->signature().return_type);
   std::string code =
@@ -576,7 +566,7 @@ const Type* ImplementationVisitor::Visit(IfStatement* stmt) {
     const Type* right_result = TypeOracle::GetVoidType();
     {
       GenerateIndent();
-      source_out() << "if ((" << expression_result.variable() << ")) ";
+      source_out() << "if ((" << expression_result.RValue() << ")) ";
       ScopedIndent indent(this, false);
       source_out() << std::endl;
       left_result = Visit(stmt->if_true);
@@ -792,11 +782,11 @@ const Type* ImplementationVisitor::Visit(ReturnStatement* stmt) {
     } else if (current_callable->IsBuiltin()) {
       if (Builtin::cast(current_callable)->IsVarArgsJavaScript()) {
         GenerateIndent();
-        source_out() << "arguments->PopAndReturn(" << return_result.variable()
+        source_out() << "arguments->PopAndReturn(" << return_result.RValue()
                      << ");" << std::endl;
       } else {
         GenerateIndent();
-        source_out() << "Return(" << return_result.variable() << ");"
+        source_out() << "Return(" << return_result.RValue() << ");"
                      << std::endl;
       }
     } else {
@@ -839,8 +829,7 @@ const Type* ImplementationVisitor::Visit(ForOfLoopStatement* stmt) {
       stmt, std::string(kForIndexValueVariable) + "_" + NewTempVariable(),
       common_type, begin);
 
-  VisitResult index_for_read = {index_var->type(),
-                                index_var->GetValueForRead()};
+  VisitResult index_for_read = {index_var->type(), index_var};
 
   Label* header_label = declarations()->DeclarePrivateLabel("header");
   GenerateLabelDefinition(header_label, stmt);
@@ -1068,7 +1057,7 @@ void ImplementationVisitor::GenerateMacroFunctionDeclaration(
     const Type* parameter_type = *type_iterator;
     const std::string& generated_type_name =
         parameter_type->GetGeneratedTypeName();
-    o << generated_type_name << " " << parameter->GetValueForDeclaration();
+    o << generated_type_name << " " << parameter->value();
     type_iterator++;
     first = false;
   }
@@ -1084,7 +1073,7 @@ void ImplementationVisitor::GenerateMacroFunctionDeclaration(
       generated_type_name += var->type()->GetGeneratedTNodeTypeName();
       generated_type_name += ">*";
       o << ", ";
-      o << generated_type_name << " " << var->GetValueForDeclaration();
+      o << generated_type_name << " " << var->value();
     }
   }
 
@@ -1174,8 +1163,7 @@ Callable* ImplementationVisitor::LookupCall(const std::string& name,
                                     is_better_candidate);
     for (Macro* candidate : candidates) {
       if (candidate != best && !is_better_candidate(best, candidate)) {
-        FailMacroLookup("ambiguous macro", name, arguments,
-                        macros_with_same_name);
+        FailMacroLookup("ambiguous macro", name, arguments, candidates);
       }
     }
     result = best;
@@ -1214,29 +1202,28 @@ void ImplementationVisitor::GenerateChangedVarsFromControlSplit(AstNode* node) {
     } else {
       source_out() << ", ";
     }
-    source_out() << v->GetValueForDeclaration();
+    source_out() << v->value();
   }
   source_out() << "}";
 }
 
 const Type* ImplementationVisitor::GetCommonType(const Type* left,
                                                  const Type* right) {
-  const Type* common_type = TypeOracle::GetVoidType();
+  const Type* common_type;
   if (IsAssignableFrom(left, right)) {
     common_type = left;
   } else if (IsAssignableFrom(right, left)) {
     common_type = right;
   } else {
-    std::stringstream s;
-    s << "illegal combination of types " << *left << " and " << *right;
-    ReportError(s.str());
+    common_type = TypeOracle::GetUnionType(left, right);
   }
+  common_type = common_type->NonConstexprVersion();
   return common_type;
 }
 
 VisitResult ImplementationVisitor::GenerateCopy(const VisitResult& to_copy) {
   std::string temp = GenerateNewTempVariable(to_copy.type());
-  source_out() << to_copy.variable() << ";" << std::endl;
+  source_out() << to_copy.RValue() << ";" << std::endl;
   GenerateIndent();
   source_out() << "USE(" << temp << ");" << std::endl;
   return VisitResult(to_copy.type(), temp);
@@ -1279,8 +1266,9 @@ void ImplementationVisitor::GenerateAssignToVariable(Variable* var,
                                                      VisitResult value) {
   VisitResult casted_value = GenerateImplicitConvert(var->type(), value);
   GenerateIndent();
-  source_out() << var->GetValueForWrite() << " = " << casted_value.variable()
-               << ";" << std::endl;
+  VisitResult variable_result = {var->type(), var};
+  source_out() << variable_result.LValue() << " = " << casted_value.RValue()
+               << ";\n";
   var->Define();
 }
 
@@ -1329,20 +1317,17 @@ Variable* ImplementationVisitor::GenerateVariableDeclaration(
   GenerateIndent();
   if (variable->type()->IsConstexpr()) {
     source_out() << variable->type()->GetGeneratedTypeName();
-    source_out() << " " << variable->GetValueForDeclaration() << "_impl;"
-                 << std::endl;
+    source_out() << " " << variable->value() << "_impl;" << std::endl;
   } else {
     source_out() << "TVARIABLE(";
     source_out() << variable->type()->GetGeneratedTNodeTypeName();
-    source_out() << ", " << variable->GetValueForDeclaration() << "_impl);"
-                 << std::endl;
+    source_out() << ", " << variable->value() << "_impl);" << std::endl;
   }
   GenerateIndent();
-  source_out() << "auto " << variable->GetValueForDeclaration() << " = &"
-               << variable->GetValueForDeclaration() << "_impl;" << std::endl;
+  source_out() << "auto " << variable->value() << " = &" << variable->value()
+               << "_impl;" << std::endl;
   GenerateIndent();
-  source_out() << "USE(" << variable->GetValueForDeclaration() << ");"
-               << std::endl;
+  source_out() << "USE(" << variable->value() << ");" << std::endl;
   if (initialization) {
     GenerateAssignToVariable(variable, *initialization);
   }
@@ -1352,7 +1337,7 @@ Variable* ImplementationVisitor::GenerateVariableDeclaration(
 void ImplementationVisitor::GenerateParameter(
     const std::string& parameter_name) {
   const Value* val = declarations()->LookupValue(parameter_name);
-  std::string var = val->GetValueForDeclaration();
+  std::string var = val->value();
   GenerateIndent();
   source_out() << val->type()->GetGeneratedTypeName() << " " << var << " = ";
 
@@ -1412,7 +1397,7 @@ VisitResult ImplementationVisitor::GeneratePointerCall(
     const Type* to_type = type->parameter_types()[current];
     VisitResult result =
         GenerateImplicitConvert(to_type, arguments.parameters[current]);
-    variables.push_back(result.variable());
+    variables.push_back(result.RValue());
   }
 
   std::string result_variable_name;
@@ -1428,6 +1413,11 @@ VisitResult ImplementationVisitor::GeneratePointerCall(
 
   Builtin* example_builtin =
       declarations()->FindSomeInternalBuiltinWithType(type);
+  if (!example_builtin) {
+    std::stringstream stream;
+    stream << "unable to find any builtin with type \"" << *type << "\"";
+    ReportError(stream.str());
+  }
 
   if (is_tailcall) {
     source_out() << "TailCallStub(";
@@ -1436,7 +1426,7 @@ VisitResult ImplementationVisitor::GeneratePointerCall(
   }
   source_out() << "Builtins::CallableFor(isolate(), Builtins::k"
                << example_builtin->name() << ").descriptor(), "
-               << callee_result.variable() << ", ";
+               << callee_result.RValue() << ", ";
 
   size_t total_parameters = 0;
   for (size_t i = 0; i < arguments.parameters.size(); ++i) {
@@ -1475,7 +1465,7 @@ VisitResult ImplementationVisitor::GenerateCall(
                               : callable->signature().types()[current];
     VisitResult result =
         GenerateImplicitConvert(to_type, arguments.parameters[current]);
-    variables.push_back(result.variable());
+    variables.push_back(result.RValue());
   }
 
   std::string result_variable_name;
@@ -1559,7 +1549,7 @@ VisitResult ImplementationVisitor::GenerateCall(
         ReportError(s.str());
       }
       j++;
-      source_out() << variable->GetValueForDeclaration();
+      source_out() << variable->value();
     }
     label->MarkUsed();
   }
@@ -1639,7 +1629,7 @@ VisitResult ImplementationVisitor::Visit(CallExpression* expr,
   }
   if (!result.type()->IsVoidOrNever()) {
     GenerateIndent();
-    source_out() << "USE(" << result.variable() << ");" << std::endl;
+    source_out() << "USE(" << result.RValue() << ");" << std::endl;
   }
   if (is_tailcall) {
     result = {TypeOracle::GetNeverType(), ""};
@@ -1671,7 +1661,7 @@ void ImplementationVisitor::GenerateBranch(const VisitResult& condition,
                                            Label* true_label,
                                            Label* false_label) {
   GenerateIndent();
-  source_out() << "Branch(" << condition.variable() << ", "
+  source_out() << "Branch(" << condition.RValue() << ", "
                << true_label->generated() << ", " << false_label->generated()
                << ");" << std::endl;
 }
@@ -1704,12 +1694,17 @@ VisitResult ImplementationVisitor::GenerateImplicitConvert(
     return source;
   }
 
-  if (TypeOracle::IsImplicitlyConverableFrom(destination_type, source.type())) {
+  if (TypeOracle::IsImplicitlyConvertableFrom(destination_type,
+                                              source.type())) {
     std::string name =
         GetGeneratedCallableName(kFromConstexprMacroName, {destination_type});
     return GenerateCall(name, {{source}, {}}, false);
   } else if (IsAssignableFrom(destination_type, source.type())) {
-    return VisitResult(destination_type, source.variable());
+    if (source.declarable()) {
+      return VisitResult(destination_type, *source.declarable());
+    } else {
+      return VisitResult(destination_type, source.value());
+    }
   } else {
     std::stringstream s;
     s << "cannot use expression of type " << *source.type()

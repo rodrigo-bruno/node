@@ -629,7 +629,7 @@ void ArrayLiteral::BuildConstantElements(Isolate* isolate) {
   // elements array to a copy-on-write array.
   if (is_simple() && depth() == 1 && array_index > 0 &&
       IsSmiOrObjectElementsKind(kind)) {
-    fixed_array->set_map(isolate->heap()->fixed_cow_array_map());
+    fixed_array->set_map(ReadOnlyRoots(isolate).fixed_cow_array_map());
   }
 
   Handle<FixedArrayBase> elements = fixed_array;
@@ -722,7 +722,7 @@ Handle<TemplateObjectDescription> GetTemplateObject::GetOrBuildDescription(
       if (this->cooked_strings()->at(i) != nullptr) {
         cooked_strings->set(i, *this->cooked_strings()->at(i)->string());
       } else {
-        cooked_strings->set(i, isolate->heap()->undefined_value());
+        cooked_strings->set(i, ReadOnlyRoots(isolate).undefined_value());
       }
     }
   }
@@ -856,7 +856,7 @@ Call::CallType Call::GetCallType() const {
   return OTHER_CALL;
 }
 
-CaseClause::CaseClause(Expression* label, ZoneList<Statement*>* statements)
+CaseClause::CaseClause(Expression* label, ZonePtrList<Statement>* statements)
     : label_(label), statements_(statements) {}
 
 bool Literal::IsPropertyName() const {
@@ -979,7 +979,7 @@ const char* CallRuntime::debug_name() {
   case k##NodeType:             \
     return static_cast<const NodeType*>(this)->labels();
 
-ZoneList<const AstRawString*>* BreakableStatement::labels() const {
+ZonePtrList<const AstRawString>* BreakableStatement::labels() const {
   switch (node_type()) {
     BREAKABLE_NODE_LIST(RETURN_LABELS)
     ITERATION_NODE_LIST(RETURN_LABELS)

@@ -877,7 +877,7 @@ PipelineCompilationJob::Status PipelineCompilationJob::PrepareJobImpl(
   }
 
   if (compilation_info()->closure()->feedback_cell()->map() ==
-      isolate->heap()->one_closure_cell_map()) {
+      ReadOnlyRoots(isolate).one_closure_cell_map()) {
     compilation_info()->MarkAsFunctionContextSpecializing();
   }
 
@@ -2152,15 +2152,6 @@ MaybeHandle<Code> Pipeline::GenerateCodeForTesting(
   if (!pipeline.OptimizeGraph(&linkage)) return MaybeHandle<Code>();
   pipeline.AssembleCode(&linkage);
   return pipeline.FinalizeCode();
-}
-
-// static
-MaybeHandle<Code> Pipeline::GenerateCodeForTesting(
-    OptimizedCompilationInfo* info, Isolate* isolate, Graph* graph,
-    Schedule* schedule) {
-  auto call_descriptor = Linkage::ComputeIncoming(info->zone(), info);
-  return GenerateCodeForTesting(info, isolate, call_descriptor, graph,
-                                schedule);
 }
 
 // static

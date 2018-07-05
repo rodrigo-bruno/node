@@ -41,6 +41,7 @@
 #include "src/property-details.h"
 #include "src/property.h"
 #include "src/prototype.h"
+#include "src/roots-inl.h"
 #include "src/transitions-inl.h"
 #include "src/v8memory.h"
 
@@ -209,22 +210,22 @@ HEAP_OBJECT_TYPE_LIST(IS_TYPE_FUNCTION_DEF)
 
 #define IS_TYPE_FUNCTION_DEF(Type, Value)             \
   bool Object::Is##Type(Isolate* isolate) const {     \
-    return this == isolate->heap()->Value();          \
+    return this == ReadOnlyRoots(isolate).Value();    \
   }                                                   \
   bool HeapObject::Is##Type(Isolate* isolate) const { \
-    return this == isolate->heap()->Value();          \
+    return this == ReadOnlyRoots(isolate).Value();    \
   }
 ODDBALL_LIST(IS_TYPE_FUNCTION_DEF)
 #undef IS_TYPE_FUNCTION_DEF
 
 bool Object::IsNullOrUndefined(Isolate* isolate) const {
-  Heap* heap = isolate->heap();
-  return this == heap->null_value() || this == heap->undefined_value();
+  ReadOnlyRoots roots(isolate);
+  return this == roots.null_value() || this == roots.undefined_value();
 }
 
 bool HeapObject::IsNullOrUndefined(Isolate* isolate) const {
-  Heap* heap = isolate->heap();
-  return this == heap->null_value() || this == heap->undefined_value();
+  ReadOnlyRoots roots(isolate);
+  return this == roots.null_value() || this == roots.undefined_value();
 }
 
 #ifdef DEBUG
@@ -269,7 +270,7 @@ bool HeapObject::IsCallable() const { return map()->is_callable(); }
 bool HeapObject::IsConstructor() const { return map()->is_constructor(); }
 
 bool HeapObject::IsModuleInfo() const {
-  return map() == GetHeap()->module_info_map();
+  return map() == GetReadOnlyRoots().module_info_map();
 }
 
 bool HeapObject::IsTemplateInfo() const {
@@ -395,8 +396,8 @@ bool HeapObject::IsEnumCache() const { return IsTuple2(); }
 bool HeapObject::IsFrameArray() const { return IsFixedArrayExact(); }
 
 bool HeapObject::IsArrayList() const {
-  return map() == GetHeap()->array_list_map() ||
-         this == GetHeap()->empty_fixed_array();
+  return map() == GetReadOnlyRoots().array_list_map() ||
+         this == GetReadOnlyRoots().empty_fixed_array();
 }
 
 bool HeapObject::IsRegExpMatchInfo() const { return IsFixedArrayExact(); }
@@ -923,10 +924,11 @@ V8_WARN_UNUSED_RESULT MaybeHandle<FixedArray> JSReceiver::OwnPropertyKeys(
 bool JSObject::PrototypeHasNoElements(Isolate* isolate, JSObject* object) {
   DisallowHeapAllocation no_gc;
   HeapObject* prototype = HeapObject::cast(object->map()->prototype());
-  HeapObject* null = isolate->heap()->null_value();
-  HeapObject* empty_fixed_array = isolate->heap()->empty_fixed_array();
+  ReadOnlyRoots roots(isolate);
+  HeapObject* null = roots.null_value();
+  HeapObject* empty_fixed_array = roots.empty_fixed_array();
   HeapObject* empty_slow_element_dictionary =
-      isolate->heap()->empty_slow_element_dictionary();
+      roots.empty_slow_element_dictionary();
   while (prototype != null) {
     Map* map = prototype->map();
     if (map->IsCustomElementsReceiverMap()) return false;
@@ -986,6 +988,12 @@ void HeapObject::VerifySmiField(int offset) {
   CHECK(READ_FIELD(this, offset)->IsSmi());
 }
 #endif
+
+ReadOnlyRoots HeapObject::GetReadOnlyRoots() const {
+  // TODO(v8:7464): When RO_SPACE is embedded, this will access a global
+  // variable instead.
+  return ReadOnlyRoots(MemoryChunk::FromHeapObject(this)->heap());
+}
 
 Heap* HeapObject::GetHeap() const {
   Heap* heap = MemoryChunk::FromAddress(
@@ -1138,7 +1146,7 @@ FixedArrayBase* JSObject::elements() const {
 }
 
 bool AllocationSite::HasWeakNext() const {
-  return map() == GetHeap()->allocation_site_map();
+  return map() == GetReadOnlyRoots().allocation_site_map();
 }
 
 void AllocationSite::Initialize() {
@@ -1147,8 +1155,9 @@ void AllocationSite::Initialize() {
   set_nested_site(Smi::kZero);
   set_pretenure_data(0);
   set_pretenure_create_count(0);
-  set_dependent_code(DependentCode::cast(GetHeap()->empty_fixed_array()),
-                     SKIP_WRITE_BARRIER);
+  set_dependent_code(
+      DependentCode::cast(GetReadOnlyRoots().empty_fixed_array()),
+      SKIP_WRITE_BARRIER);
 }
 
 bool AllocationSite::IsZombie() const {
@@ -1305,7 +1314,7 @@ void JSObject::EnsureCanContainElements(Handle<JSObject> object,
     DCHECK(mode != ALLOW_COPIED_DOUBLE_ELEMENTS);
     bool is_holey = IsHoleyElementsKind(current_kind);
     if (current_kind == HOLEY_ELEMENTS) return;
-    Object* the_hole = object->GetHeap()->the_hole_value();
+    Object* the_hole = object->GetReadOnlyRoots().the_hole_value();
     for (uint32_t i = 0; i < count; ++i) {
       Object* current = *objects++;
       if (current == the_hole) {
@@ -1339,10 +1348,10 @@ void JSObject::EnsureCanContainElements(Handle<JSObject> object,
                                         Handle<FixedArrayBase> elements,
                                         uint32_t length,
                                         EnsureElementsMode mode) {
-  Heap* heap = object->GetHeap();
-  if (elements->map() != heap->fixed_double_array_map()) {
-    DCHECK(elements->map() == heap->fixed_array_map() ||
-           elements->map() == heap->fixed_cow_array_map());
+  ReadOnlyRoots roots = object->GetReadOnlyRoots();
+  if (elements->map() != roots.fixed_double_array_map()) {
+    DCHECK(elements->map() == roots.fixed_array_map() ||
+           elements->map() == roots.fixed_cow_array_map());
     if (mode == ALLOW_COPIED_DOUBLE_ELEMENTS) {
       mode = DONT_ALLOW_DOUBLE_ELEMENTS;
     }
@@ -1374,11 +1383,11 @@ void JSObject::SetMapAndElements(Handle<JSObject> object,
                                  Handle<FixedArrayBase> value) {
   JSObject::MigrateToMap(object, new_map);
   DCHECK((object->map()->has_fast_smi_or_object_elements() ||
-          (*value == object->GetHeap()->empty_fixed_array()) ||
+          (*value == object->GetReadOnlyRoots().empty_fixed_array()) ||
           object->map()->has_fast_string_wrapper_elements()) ==
-         (value->map() == object->GetHeap()->fixed_array_map() ||
-          value->map() == object->GetHeap()->fixed_cow_array_map()));
-  DCHECK((*value == object->GetHeap()->empty_fixed_array()) ||
+         (value->map() == object->GetReadOnlyRoots().fixed_array_map() ||
+          value->map() == object->GetReadOnlyRoots().fixed_cow_array_map()));
+  DCHECK((*value == object->GetReadOnlyRoots().empty_fixed_array()) ||
          (object->map()->has_fast_double_elements() ==
           value->IsFixedDoubleArray()));
   object->set_elements(*value);
@@ -1458,7 +1467,7 @@ void WeakCell::clear() {
   // Either the garbage collector is clearing the cell or we are simply
   // initializing the root empty weak cell.
   DCHECK(Heap::FromWritableHeapObject(this)->gc_state() == Heap::MARK_COMPACT ||
-         this == Heap::FromWritableHeapObject(this)->empty_weak_cell());
+         this == GetReadOnlyRoots().empty_weak_cell());
   WRITE_FIELD(this, kValueOffset, Smi::kZero);
 }
 
@@ -1696,7 +1705,7 @@ void JSObject::InitializeBody(Map* map, int start_offset,
 }
 
 void Struct::InitializeBody(int object_size) {
-  Object* value = GetHeap()->undefined_value();
+  Object* value = GetReadOnlyRoots().undefined_value();
   for (int offset = kHeaderSize; offset < object_size; offset += kPointerSize) {
     WRITE_FIELD(this, offset, value);
   }
@@ -2753,11 +2762,11 @@ ElementsKind JSObject::GetElementsKind() {
   if (ElementsAreSafeToExamine()) {
     Map* map = fixed_array->map();
     if (IsSmiOrObjectElementsKind(kind)) {
-      DCHECK(map == GetHeap()->fixed_array_map() ||
-             map == GetHeap()->fixed_cow_array_map());
+      DCHECK(map == GetReadOnlyRoots().fixed_array_map() ||
+             map == GetReadOnlyRoots().fixed_cow_array_map());
     } else if (IsDoubleElementsKind(kind)) {
       DCHECK(fixed_array->IsFixedDoubleArray() ||
-             fixed_array == GetHeap()->empty_fixed_array());
+             fixed_array == GetReadOnlyRoots().empty_fixed_array());
     } else if (kind == DICTIONARY_ELEMENTS) {
       DCHECK(fixed_array->IsFixedArray());
       DCHECK(fixed_array->IsDictionary());
@@ -2971,13 +2980,15 @@ MaybeHandle<Object> Object::GetPropertyOrElement(Handle<Object> receiver,
 
 
 void JSReceiver::initialize_properties() {
-  DCHECK(!GetHeap()->InNewSpace(GetHeap()->empty_fixed_array()));
-  DCHECK(!GetHeap()->InNewSpace(GetHeap()->empty_property_dictionary()));
+  Heap* heap = GetHeap();
+  ReadOnlyRoots roots(heap);
+  DCHECK(!heap->InNewSpace(roots.empty_fixed_array()));
+  DCHECK(!heap->InNewSpace(heap->empty_property_dictionary()));
   if (map()->is_dictionary_map()) {
     WRITE_FIELD(this, kPropertiesOrHashOffset,
-                GetHeap()->empty_property_dictionary());
+                heap->empty_property_dictionary());
   } else {
-    WRITE_FIELD(this, kPropertiesOrHashOffset, GetHeap()->empty_fixed_array());
+    WRITE_FIELD(this, kPropertiesOrHashOffset, roots.empty_fixed_array());
   }
 }
 
@@ -3006,8 +3017,8 @@ PropertyArray* JSReceiver::property_array() const {
   DCHECK(HasFastProperties());
 
   Object* prop = raw_properties_or_hash();
-  if (prop->IsSmi() || prop == GetHeap()->empty_fixed_array()) {
-    return GetHeap()->empty_property_array();
+  if (prop->IsSmi() || prop == GetReadOnlyRoots().empty_fixed_array()) {
+    return GetReadOnlyRoots().empty_property_array();
   }
 
   return PropertyArray::cast(prop);
@@ -3139,7 +3150,7 @@ bool AccessorPair::IsJSAccessor(Object* obj) {
 
 template <typename Derived, typename Shape>
 void Dictionary<Derived, Shape>::ClearEntry(int entry) {
-  Object* the_hole = Heap::FromWritableHeapObject(this)->the_hole_value();
+  Object* the_hole = this->GetReadOnlyRoots().the_hole_value();
   PropertyDetails details = PropertyDetails::Empty();
   Derived::cast(this)->SetEntry(entry, the_hole, the_hole, details);
 }
@@ -3177,9 +3188,9 @@ PropertyCell* GlobalDictionary::CellAt(int entry) {
 }
 
 bool GlobalDictionaryShape::IsLive(Isolate* isolate, Object* k) {
-  Heap* heap = isolate->heap();
-  DCHECK_NE(heap->the_hole_value(), k);
-  return k != heap->undefined_value();
+  ReadOnlyRoots roots(isolate);
+  DCHECK_NE(roots.the_hole_value(), k);
+  return k != roots.undefined_value();
 }
 
 bool GlobalDictionaryShape::IsKey(Isolate* isolate, Object* k) {

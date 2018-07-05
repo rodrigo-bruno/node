@@ -177,7 +177,7 @@ bool Serializer<AllocatorT>::SerializeBackReference(HeapObject* obj,
                                                     HowToCode how_to_code,
                                                     WhereToPoint where_to_point,
                                                     int skip) {
-  SerializerReference reference = reference_map_.Lookup(obj);
+  SerializerReference reference = reference_map_.LookupReference(obj);
   if (!reference.is_valid()) return false;
   // Encode the location of an already deserialized object in order to write
   // its location into a later object.  We can encode the location as an
@@ -291,7 +291,21 @@ template <class AllocatorT>
 void Serializer<AllocatorT>::PutBackReference(HeapObject* object,
                                               SerializerReference reference) {
   DCHECK(allocator()->BackReferenceIsAlreadyAllocated(reference));
-  sink_.PutInt(reference.back_reference(), "BackRefValue");
+  switch (reference.space()) {
+    case MAP_SPACE:
+      sink_.PutInt(reference.map_index(), "BackRefMapIndex");
+      break;
+
+    case LO_SPACE:
+      sink_.PutInt(reference.large_object_index(), "BackRefLargeObjectIndex");
+      break;
+
+    default:
+      sink_.PutInt(reference.chunk_index(), "BackRefChunkIndex");
+      sink_.PutInt(reference.chunk_offset(), "BackRefChunkOffset");
+      break;
+  }
+
   hot_objects_.Add(object);
 }
 
@@ -406,7 +420,7 @@ template <class AllocatorT>
 int32_t Serializer<AllocatorT>::ObjectSerializer::SerializeBackingStore(
     void* backing_store, int32_t byte_length) {
   SerializerReference reference =
-      serializer_->reference_map()->Lookup(backing_store);
+      serializer_->reference_map()->LookupReference(backing_store);
 
   // Serialize the off-heap backing store.
   if (!reference.is_valid()) {
@@ -486,7 +500,7 @@ void Serializer<AllocatorT>::ObjectSerializer::SerializeExternalString() {
   // for native native source code strings, we replace the resource field
   // with the native source id.
   // For the rest we serialize them to look like ordinary sequential strings.
-  if (object_->map() != heap->native_source_string_map()) {
+  if (object_->map() != ReadOnlyRoots(heap).native_source_string_map()) {
     ExternalString* string = ExternalString::cast(object_);
     Address resource = string->resource_as_address();
     ExternalReferenceEncoder::Value reference;
@@ -518,9 +532,9 @@ void Serializer<
     AllocatorT>::ObjectSerializer::SerializeExternalStringAsSequentialString() {
   // Instead of serializing this as an external string, we serialize
   // an imaginary sequential string with the same content.
-  Isolate* isolate = serializer_->isolate();
+  ReadOnlyRoots roots(serializer_->isolate());
   DCHECK(object_->IsExternalString());
-  DCHECK(object_->map() != isolate->heap()->native_source_string_map());
+  DCHECK(object_->map() != roots.native_source_string_map());
   ExternalString* string = ExternalString::cast(object_);
   int length = string->length();
   Map* map;
@@ -530,15 +544,14 @@ void Serializer<
   // Find the map and size for the imaginary sequential string.
   bool internalized = object_->IsInternalizedString();
   if (object_->IsExternalOneByteString()) {
-    map = internalized ? isolate->heap()->one_byte_internalized_string_map()
-                       : isolate->heap()->one_byte_string_map();
+    map = internalized ? roots.one_byte_internalized_string_map()
+                       : roots.one_byte_string_map();
     allocation_size = SeqOneByteString::SizeFor(length);
     content_size = length * kCharSize;
     resource = reinterpret_cast<const byte*>(
         ExternalOneByteString::cast(string)->resource()->data());
   } else {
-    map = internalized ? isolate->heap()->internalized_string_map()
-                       : isolate->heap()->string_map();
+    map = internalized ? roots.internalized_string_map() : roots.string_map();
     allocation_size = SeqTwoByteString::SizeFor(length);
     content_size = length * kShortSize;
     resource = reinterpret_cast<const byte*>(
@@ -581,7 +594,8 @@ class UnlinkWeakNextScope {
     if (object->IsAllocationSite()) {
       object_ = object;
       next_ = AllocationSite::cast(object)->weak_next();
-      AllocationSite::cast(object)->set_weak_next(heap->undefined_value());
+      AllocationSite::cast(object)->set_weak_next(
+          ReadOnlyRoots(heap).undefined_value());
     }
   }
 
@@ -634,7 +648,7 @@ void Serializer<AllocatorT>::ObjectSerializer::Serialize() {
 
   if (object_->IsScript()) {
     // Clear cached line ends.
-    Object* undefined = serializer_->isolate()->heap()->undefined_value();
+    Object* undefined = ReadOnlyRoots(serializer_->isolate()).undefined_value();
     Script::cast(object_)->set_line_ends(undefined);
   }
 
@@ -678,7 +692,7 @@ void Serializer<AllocatorT>::ObjectSerializer::SerializeDeferred() {
   int size = object_->Size();
   Map* map = object_->map();
   SerializerReference back_reference =
-      serializer_->reference_map()->Lookup(object_);
+      serializer_->reference_map()->LookupReference(object_);
   DCHECK(back_reference.is_back_reference());
 
   // Serialize the rest of the object.

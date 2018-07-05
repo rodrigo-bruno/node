@@ -1301,40 +1301,20 @@ void Logger::CodeCreateEvent(CodeEventListener::LogEventsAndTags tag,
                              Name* source, int line, int column) {
   if (!is_listening_to_code_events()) return;
   if (!FLAG_log_code || !log_->IsEnabled()) return;
-
-  Log::MessageBuilder msg(log_);
-  AppendCodeCreateHeader(msg, tag, code, &timer_);
-  msg << shared->DebugName() << " " << source << ":" << line << ":" << column
-      << kNext << reinterpret_cast<void*>(shared->address()) << kNext
-      << ComputeMarker(shared, code);
-  msg.WriteToLogFile();
+  {
+    Log::MessageBuilder msg(log_);
+    AppendCodeCreateHeader(msg, tag, code, &timer_);
+    msg << shared->DebugName() << " " << source << ":" << line << ":" << column
+        << kNext << reinterpret_cast<void*>(shared->address()) << kNext
+        << ComputeMarker(shared, code);
+    msg.WriteToLogFile();
+  }
 
   if (!FLAG_log_source_code) return;
   Object* script_object = shared->script();
   if (!script_object->IsScript()) return;
-  // Make sure the script is written to the log file.
   Script* script = Script::cast(script_object);
-  int script_id = script->id();
-  if (logged_source_code_.find(script_id) == logged_source_code_.end()) {
-    // This script has not been logged yet.
-    logged_source_code_.insert(script_id);
-    Object* source_object = script->source();
-    if (source_object->IsString()) {
-      String* source_code = String::cast(source_object);
-      msg << "script" << kNext << script_id << kNext;
-
-      // Log the script name.
-      if (script->name()->IsString()) {
-        msg << String::cast(script->name()) << kNext;
-      } else {
-        msg << "<unknown>" << kNext;
-      }
-
-      // Log the source code.
-      msg << source_code;
-      msg.WriteToLogFile();
-    }
-  }
+  if (!EnsureLogScriptSource(script)) return;
 
   // We log source code information in the form:
   //
@@ -1357,10 +1337,11 @@ void Logger::CodeCreateEvent(CodeEventListener::LogEventsAndTags tag,
   //         <function-id> is an index into the <fns> function table
   //   <fns> is the function table encoded as a sequence of strings
   //      S<shared-function-info-address>
+  Log::MessageBuilder msg(log_);
   msg << "code-source-info" << kNext
-      << reinterpret_cast<void*>(code->InstructionStart()) << kNext << script_id
-      << kNext << shared->StartPosition() << kNext << shared->EndPosition()
-      << kNext;
+      << reinterpret_cast<void*>(code->InstructionStart()) << kNext
+      << script->id() << kNext << shared->StartPosition() << kNext
+      << shared->EndPosition() << kNext;
 
   SourcePositionTableIterator iterator(code->source_position_table());
   bool is_first = true;
@@ -1523,8 +1504,8 @@ void Logger::SuspectReadEvent(Name* name, Object* obj) {
   if (!log_->IsEnabled() || !FLAG_log_suspect) return;
   Log::MessageBuilder msg(log_);
   String* class_name = obj->IsJSObject()
-                       ? JSObject::cast(obj)->class_name()
-                       : isolate_->heap()->empty_string();
+                           ? JSObject::cast(obj)->class_name()
+                           : ReadOnlyRoots(isolate_).empty_string();
   msg << "suspect-read" << kNext << class_name << kNext << name;
   msg.WriteToLogFile();
 }
@@ -1622,6 +1603,34 @@ void Logger::ScriptDetails(Script* script) {
     msg << String::cast(script->source_mapping_url());
   }
   msg.WriteToLogFile();
+}
+
+bool Logger::EnsureLogScriptSource(Script* script) {
+  if (!log_->IsEnabled()) return false;
+  Log::MessageBuilder msg(log_);
+  // Make sure the script is written to the log file.
+  int script_id = script->id();
+  if (logged_source_code_.find(script_id) != logged_source_code_.end()) {
+    return false;
+  }
+  // This script has not been logged yet.
+  logged_source_code_.insert(script_id);
+  Object* source_object = script->source();
+  if (!source_object->IsString()) return false;
+  String* source_code = String::cast(source_object);
+  msg << "script-source" << kNext << script_id << kNext;
+
+  // Log the script name.
+  if (script->name()->IsString()) {
+    msg << String::cast(script->name()) << kNext;
+  } else {
+    msg << "<unknown>" << kNext;
+  }
+
+  // Log the source code.
+  msg << source_code;
+  msg.WriteToLogFile();
+  return true;
 }
 
 void Logger::RuntimeCallTimerEvent() {
@@ -2211,7 +2220,7 @@ void ExistingCodeLogger::LogExistingFunction(
     } else {
       CALL_CODE_EVENT_HANDLER(CodeCreateEvent(
           Logger::ToNativeByScript(tag, *script), *code, *shared,
-          isolate_->heap()->empty_string(), line_num, column_num))
+          ReadOnlyRoots(isolate_).empty_string(), line_num, column_num))
     }
   } else if (shared->IsApiFunction()) {
     // API function.
@@ -2227,8 +2236,8 @@ void ExistingCodeLogger::LogExistingFunction(
       CALL_CODE_EVENT_HANDLER(CallbackEvent(shared->DebugName(), entry_point))
     }
   } else {
-    CALL_CODE_EVENT_HANDLER(
-        CodeCreateEvent(tag, *code, *shared, isolate_->heap()->empty_string()))
+    CALL_CODE_EVENT_HANDLER(CodeCreateEvent(
+        tag, *code, *shared, ReadOnlyRoots(isolate_).empty_string()))
   }
 }
 

@@ -980,7 +980,8 @@ Reduction JSCreateLowering::ReduceJSCreateClosure(Node* node) {
   // Use inline allocation of closures only for instantiation sites that have
   // seen more than one instantiation, this simplifies the generated code and
   // also serves as a heuristic of which allocation sites benefit from it.
-  if (feedback_cell->map() != isolate()->heap()->many_closures_cell_map()) {
+  if (feedback_cell->map() !=
+      ReadOnlyRoots(isolate()).many_closures_cell_map()) {
     // The generic path can only create closures for user functions.
     DCHECK_EQ(isolate()->builtins()->builtin(Builtins::kCompileLazy), *code);
     return NoChange();
@@ -1248,10 +1249,11 @@ Reduction JSCreateLowering::ReduceJSCreateLiteralRegExp(Node* node) {
 }
 
 Reduction JSCreateLowering::ReduceJSCreateFunctionContext(Node* node) {
+  DisallowHandleDereference disallow_dereference;
   DCHECK_EQ(IrOpcode::kJSCreateFunctionContext, node->opcode());
   const CreateFunctionContextParameters& parameters =
       CreateFunctionContextParametersOf(node->op());
-  Handle<ScopeInfo> scope_info = parameters.scope_info();
+  ScopeInfoRef scope_info(parameters.scope_info());
   int slot_count = parameters.slot_count();
   ScopeType scope_type = parameters.scope_type();
 
@@ -1295,8 +1297,9 @@ Reduction JSCreateLowering::ReduceJSCreateFunctionContext(Node* node) {
 }
 
 Reduction JSCreateLowering::ReduceJSCreateWithContext(Node* node) {
+  DisallowHandleDereference disallow_dereference;
   DCHECK_EQ(IrOpcode::kJSCreateWithContext, node->opcode());
-  Handle<ScopeInfo> scope_info = ScopeInfoOf(node->op());
+  ScopeInfoRef scope_info(ScopeInfoOf(node->op()));
   Node* extension = NodeProperties::GetValueInput(node, 0);
   Node* effect = NodeProperties::GetEffectInput(node);
   Node* control = NodeProperties::GetControlInput(node);
@@ -1316,8 +1319,9 @@ Reduction JSCreateLowering::ReduceJSCreateWithContext(Node* node) {
 }
 
 Reduction JSCreateLowering::ReduceJSCreateCatchContext(Node* node) {
+  DisallowHandleDereference disallow_dereference;
   DCHECK_EQ(IrOpcode::kJSCreateCatchContext, node->opcode());
-  Handle<ScopeInfo> scope_info = ScopeInfoOf(node->op());
+  ScopeInfoRef scope_info(ScopeInfoOf(node->op()));
   Node* exception = NodeProperties::GetValueInput(node, 0);
   Node* effect = NodeProperties::GetEffectInput(node);
   Node* control = NodeProperties::GetControlInput(node);
@@ -1341,9 +1345,10 @@ Reduction JSCreateLowering::ReduceJSCreateCatchContext(Node* node) {
 }
 
 Reduction JSCreateLowering::ReduceJSCreateBlockContext(Node* node) {
+  DisallowHandleDereference disallow_dereference;
   DCHECK_EQ(IrOpcode::kJSCreateBlockContext, node->opcode());
-  Handle<ScopeInfo> scope_info = ScopeInfoOf(node->op());
-  int const context_length = scope_info->ContextLength();
+  ScopeInfoRef scope_info(ScopeInfoOf(node->op()));
+  int const context_length = scope_info.ContextLength();
 
   // Use inline allocation for block contexts up to a size limit.
   if (context_length < kBlockContextAllocationLimit) {
@@ -1391,7 +1396,7 @@ Reduction JSCreateLowering::ReduceJSCreateObject(Node* node) {
   if (instance_map->is_dictionary_map()) {
     DCHECK(prototype_const->IsNull());
     // Allocated an empty NameDictionary as backing store for the properties.
-    Handle<Map> map(isolate()->heap()->name_dictionary_map(), isolate());
+    Handle<Map> map(ReadOnlyRoots(isolate()).name_dictionary_map(), isolate());
     int capacity =
         NameDictionary::ComputeCapacity(NameDictionary::kInitialCapacity);
     DCHECK(base::bits::IsPowerOfTwo(capacity));

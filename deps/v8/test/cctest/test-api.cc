@@ -13406,7 +13406,8 @@ TEST(CallHandlerAsFunctionHasNoSideEffectNotSupported) {
   i::CallHandlerInfo* handler_info =
       i::CallHandlerInfo::cast(cons->instance_call_handler());
   CHECK(!handler_info->IsSideEffectFreeCallHandlerInfo(CcTest::i_isolate()));
-  handler_info->set_map(heap->side_effect_free_call_handler_info_map());
+  handler_info->set_map(
+      i::ReadOnlyRoots(heap).side_effect_free_call_handler_info_map());
   CHECK(v8::debug::EvaluateGlobal(isolate, v8_str("obj()"), true).IsEmpty());
 }
 
@@ -15620,6 +15621,8 @@ class OneByteVectorResource : public v8::String::ExternalOneByteStringResource {
   virtual ~OneByteVectorResource() {}
   virtual size_t length() const { return data_.length(); }
   virtual const char* data() const { return data_.start(); }
+  virtual void Dispose() {}
+
  private:
   i::Vector<const char> data_;
 };
@@ -15632,6 +15635,8 @@ class UC16VectorResource : public v8::String::ExternalStringResource {
   virtual ~UC16VectorResource() {}
   virtual size_t length() const { return data_.length(); }
   virtual const i::uc16* data() const { return data_.start(); }
+  virtual void Dispose() {}
+
  private:
   i::Vector<const i::uc16> data_;
 };
@@ -15641,19 +15646,20 @@ static void MorphAString(i::String* string,
                          OneByteVectorResource* one_byte_resource,
                          UC16VectorResource* uc16_resource) {
   CHECK(i::StringShape(string).IsExternal());
+  i::ReadOnlyRoots roots(CcTest::heap());
   if (string->IsOneByteRepresentation()) {
     // Check old map is not internalized or long.
-    CHECK(string->map() == CcTest::heap()->external_one_byte_string_map());
+    CHECK(string->map() == roots.external_one_byte_string_map());
     // Morph external string to be TwoByte string.
-    string->set_map(CcTest::heap()->external_string_map());
+    string->set_map(roots.external_string_map());
     i::ExternalTwoByteString* morphed =
          i::ExternalTwoByteString::cast(string);
     morphed->set_resource(uc16_resource);
   } else {
     // Check old map is not internalized or long.
-    CHECK(string->map() == CcTest::heap()->external_string_map());
+    CHECK(string->map() == roots.external_string_map());
     // Morph external string to be one-byte string.
-    string->set_map(CcTest::heap()->external_one_byte_string_map());
+    string->set_map(roots.external_one_byte_string_map());
     i::ExternalOneByteString* morphed = i::ExternalOneByteString::cast(string);
     morphed->set_resource(one_byte_resource);
   }
@@ -15674,15 +15680,14 @@ THREADED_TEST(MorphCompositeStringTest) {
     OneByteVectorResource one_byte_resource(
         i::Vector<const char>(c_string, i::StrLength(c_string)));
     UC16VectorResource uc16_resource(
-        i::Vector<const uint16_t>(two_byte_string,
-                                  i::StrLength(c_string)));
+        i::Vector<const uint16_t>(two_byte_string, i::StrLength(c_string)));
 
-    Local<String> lhs(
-        v8::Utils::ToLocal(factory->NewExternalStringFromOneByte(
-                                        &one_byte_resource).ToHandleChecked()));
-    Local<String> rhs(
-        v8::Utils::ToLocal(factory->NewExternalStringFromOneByte(
-                                        &one_byte_resource).ToHandleChecked()));
+    Local<String> lhs(v8::Utils::ToLocal(
+        factory->NewExternalStringFromOneByte(&one_byte_resource)
+            .ToHandleChecked()));
+    Local<String> rhs(v8::Utils::ToLocal(
+        factory->NewExternalStringFromOneByte(&one_byte_resource)
+            .ToHandleChecked()));
 
     CHECK(env->Global()->Set(env.local(), v8_str("lhs"), lhs).FromJust());
     CHECK(env->Global()->Set(env.local(), v8_str("rhs"), rhs).FromJust());
@@ -15695,10 +15700,10 @@ THREADED_TEST(MorphCompositeStringTest) {
     CHECK(lhs->IsOneByte());
     CHECK(rhs->IsOneByte());
 
-    MorphAString(*v8::Utils::OpenHandle(*lhs), &one_byte_resource,
-                 &uc16_resource);
-    MorphAString(*v8::Utils::OpenHandle(*rhs), &one_byte_resource,
-                 &uc16_resource);
+    i::String* ilhs = *v8::Utils::OpenHandle(*lhs);
+    i::String* irhs = *v8::Utils::OpenHandle(*rhs);
+    MorphAString(ilhs, &one_byte_resource, &uc16_resource);
+    MorphAString(irhs, &one_byte_resource, &uc16_resource);
 
     // This should UTF-8 without flattening, since everything is ASCII.
     Local<String> cons =
@@ -15741,6 +15746,16 @@ THREADED_TEST(MorphCompositeStringTest) {
                            ->Get(env.local(), v8_str("slice_on_cons"))
                            .ToLocalChecked())
               .FromJust());
+
+    // This avoids the GC from trying to free a stack allocated resource.
+    if (ilhs->IsExternalOneByteString())
+      i::ExternalOneByteString::cast(ilhs)->set_resource(nullptr);
+    else
+      i::ExternalTwoByteString::cast(ilhs)->set_resource(nullptr);
+    if (irhs->IsExternalOneByteString())
+      i::ExternalOneByteString::cast(irhs)->set_resource(nullptr);
+    else
+      i::ExternalTwoByteString::cast(irhs)->set_resource(nullptr);
   }
   i::DeleteArray(two_byte_string);
 }
@@ -20305,6 +20320,8 @@ THREADED_TEST(TwoByteStringInOneByteCons) {
   reresult = CompileRun("str2.charCodeAt(2);");
   CHECK_EQ(static_cast<int32_t>('e'),
            reresult->Int32Value(context.local()).FromJust());
+  // This avoids the GC from trying to free stack allocated resources.
+  i::Handle<i::ExternalTwoByteString>::cast(flat_string)->set_resource(nullptr);
 }
 
 

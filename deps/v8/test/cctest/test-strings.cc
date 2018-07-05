@@ -291,7 +291,7 @@ ConsStringGenerationData::ConsStringGenerationData(bool long_blocks) {
   rng_.init();
   InitializeBuildingBlocks(
       building_blocks_, kNumberOfBuildingBlocks, long_blocks, &rng_);
-  empty_string_ = CcTest::heap()->empty_string();
+  empty_string_ = ReadOnlyRoots(CcTest::heap()).empty_string();
   Reset();
 }
 
@@ -1244,6 +1244,8 @@ TEST(SliceFromExternal) {
   CHECK_EQ(SlicedString::cast(*slice)->parent(), *string);
   CHECK(SlicedString::cast(*slice)->parent()->IsExternalString());
   CHECK(slice->IsFlat());
+  // This avoids the GC from trying to free stack allocated resources.
+  i::Handle<i::ExternalOneByteString>::cast(string)->set_resource(nullptr);
 }
 
 

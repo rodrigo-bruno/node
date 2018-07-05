@@ -103,7 +103,7 @@ void MarkingVerifier::VerifyMarkingOnPage(const Page* page, Address start,
     object = HeapObject::FromAddress(current);
     // One word fillers at the end of a black area can be grey.
     if (IsBlackOrGrey(object) &&
-        object->map() != heap_->one_pointer_filler_map()) {
+        object->map() != ReadOnlyRoots(heap_).one_pointer_filler_map()) {
       CHECK(IsMarked(object));
       CHECK(current >= next_object_must_be_here_or_later);
       object->Iterate(this);
@@ -949,7 +949,7 @@ class InternalizedStringTableCleaner : public ObjectVisitor {
 
   void VisitPointers(HeapObject* host, Object** start, Object** end) override {
     // Visit all HeapObject pointers in [start, end).
-    Object* the_hole = heap_->the_hole_value();
+    Object* the_hole = ReadOnlyRoots(heap_).the_hole_value();
     MarkCompactCollector::NonAtomicMarkingState* marking_state =
         heap_->mark_compact_collector()->non_atomic_marking_state();
     for (Object** p = start; p < end; p++) {
@@ -993,7 +993,7 @@ class ExternalStringTableCleaner : public RootVisitor {
     // Visit all HeapObject pointers in [start, end).
     MarkCompactCollector::NonAtomicMarkingState* marking_state =
         heap_->mark_compact_collector()->non_atomic_marking_state();
-    Object* the_hole = heap_->the_hole_value();
+    Object* the_hole = ReadOnlyRoots(heap_).the_hole_value();
     for (Object** p = start; p < end; p++) {
       Object* o = *p;
       if (o->IsHeapObject()) {
@@ -1470,14 +1470,16 @@ void MarkCompactCollector::MarkRoots(RootVisitor* root_visitor,
 
 void MarkCompactCollector::ProcessEphemeronsUntilFixpoint() {
   bool work_to_do = true;
+  int iterations = 0;
+  int max_iterations = FLAG_ephemeron_fixpoint_iterations;
 
   while (work_to_do) {
-    if (heap_->local_embedder_heap_tracer()->InUse()) {
-      TRACE_GC(heap()->tracer(), GCTracer::Scope::MC_MARK_WRAPPER_TRACING);
-      heap_->local_embedder_heap_tracer()->RegisterWrappersWithRemoteTracer();
-      heap_->local_embedder_heap_tracer()->Trace(
-          0, EmbedderHeapTracer::AdvanceTracingActions(
-                 EmbedderHeapTracer::ForceCompletionAction::FORCE_COMPLETION));
+    PerformWrapperTracing();
+
+    if (iterations >= max_iterations) {
+      // Give up fixpoint iteration and switch to linear algorithm.
+      ProcessEphemeronsLinear();
+      break;
     }
 
     // Move ephemerons from next_ephemerons into current_ephemerons to
@@ -1506,6 +1508,7 @@ void MarkCompactCollector::ProcessEphemeronsUntilFixpoint() {
         work_to_do || !marking_worklist()->IsEmpty() ||
         heap()->concurrent_marking()->ephemeron_marked() ||
         heap()->local_embedder_heap_tracer()->NumberOfWrappersToTrace() > 0;
+    ++iterations;
   }
 
   CHECK(marking_worklist()->IsEmpty());
@@ -1539,12 +1542,113 @@ bool MarkCompactCollector::ProcessEphemerons() {
   }
 
   // Flush local ephemerons for main task to global pool.
+  weak_objects_.ephemeron_hash_tables.FlushToGlobal(kMainThread);
   weak_objects_.next_ephemerons.FlushToGlobal(kMainThread);
 
   return ephemeron_marked;
 }
 
+void MarkCompactCollector::ProcessEphemeronsLinear() {
+  TRACE_GC(heap()->tracer(),
+           GCTracer::Scope::MC_MARK_WEAK_CLOSURE_EPHEMERON_LINEAR);
+  CHECK(heap()->concurrent_marking()->IsStopped());
+  std::unordered_multimap<HeapObject*, HeapObject*> key_to_values;
+  Ephemeron ephemeron;
+
+  DCHECK(weak_objects_.current_ephemerons.IsEmpty());
+  weak_objects_.current_ephemerons.Swap(weak_objects_.next_ephemerons);
+
+  while (weak_objects_.current_ephemerons.Pop(kMainThread, &ephemeron)) {
+    VisitEphemeron(ephemeron.key, ephemeron.value);
+
+    if (non_atomic_marking_state()->IsWhite(ephemeron.value)) {
+      key_to_values.insert(std::make_pair(ephemeron.key, ephemeron.value));
+    }
+  }
+
+  ephemeron_marking_.newly_discovered_limit = key_to_values.size();
+  bool work_to_do = true;
+
+  while (work_to_do) {
+    PerformWrapperTracing();
+
+    ResetNewlyDiscovered();
+    ephemeron_marking_.newly_discovered_limit = key_to_values.size();
+
+    {
+      TRACE_GC(heap()->tracer(),
+               GCTracer::Scope::MC_MARK_WEAK_CLOSURE_EPHEMERON_MARKING);
+      // Drain marking worklist and push all discovered objects into
+      // newly_discovered.
+      ProcessMarkingWorklistInternal<
+          MarkCompactCollector::MarkingWorklistProcessingMode::
+              kTrackNewlyDiscoveredObjects>();
+    }
+
+    while (weak_objects_.discovered_ephemerons.Pop(kMainThread, &ephemeron)) {
+      VisitEphemeron(ephemeron.key, ephemeron.value);
+
+      if (non_atomic_marking_state()->IsWhite(ephemeron.value)) {
+        key_to_values.insert(std::make_pair(ephemeron.key, ephemeron.value));
+      }
+    }
+
+    if (ephemeron_marking_.newly_discovered_overflowed) {
+      // If newly_discovered was overflowed just visit all ephemerons in
+      // next_ephemerons.
+      weak_objects_.next_ephemerons.Iterate([&](Ephemeron ephemeron) {
+        if (non_atomic_marking_state()->IsBlackOrGrey(ephemeron.key) &&
+            non_atomic_marking_state()->WhiteToGrey(ephemeron.value)) {
+          marking_worklist()->Push(ephemeron.value);
+        }
+      });
+
+    } else {
+      // This is the good case: newly_discovered stores all discovered
+      // objects. Now use key_to_values to see if discovered objects keep more
+      // objects alive due to ephemeron semantics.
+      for (HeapObject* object : ephemeron_marking_.newly_discovered) {
+        auto range = key_to_values.equal_range(object);
+        for (auto it = range.first; it != range.second; ++it) {
+          HeapObject* value = it->second;
+          MarkObject(object, value);
+        }
+      }
+    }
+
+    // Do NOT drain marking worklist here, otherwise the current checks
+    // for work_to_do are not sufficient for determining if another iteration
+    // is necessary.
+
+    work_to_do =
+        !marking_worklist()->IsEmpty() ||
+        heap()->local_embedder_heap_tracer()->NumberOfWrappersToTrace() > 0;
+    CHECK(weak_objects_.discovered_ephemerons.IsEmpty());
+  }
+
+  ResetNewlyDiscovered();
+  ephemeron_marking_.newly_discovered.shrink_to_fit();
+
+  CHECK(marking_worklist()->IsEmpty());
+}
+
+void MarkCompactCollector::PerformWrapperTracing() {
+  if (heap_->local_embedder_heap_tracer()->InUse()) {
+    TRACE_GC(heap()->tracer(), GCTracer::Scope::MC_MARK_WRAPPER_TRACING);
+    heap_->local_embedder_heap_tracer()->RegisterWrappersWithRemoteTracer();
+    heap_->local_embedder_heap_tracer()->Trace(
+        0, EmbedderHeapTracer::AdvanceTracingActions(
+               EmbedderHeapTracer::ForceCompletionAction::FORCE_COMPLETION));
+  }
+}
+
 void MarkCompactCollector::ProcessMarkingWorklist() {
+  ProcessMarkingWorklistInternal<
+      MarkCompactCollector::MarkingWorklistProcessingMode::kDefault>();
+}
+
+template <MarkCompactCollector::MarkingWorklistProcessingMode mode>
+void MarkCompactCollector::ProcessMarkingWorklistInternal() {
   HeapObject* object;
   MarkCompactMarkingVisitor visitor(this, marking_state());
   while ((object = marking_worklist()->Pop()) != nullptr) {
@@ -1553,6 +1657,10 @@ void MarkCompactCollector::ProcessMarkingWorklist() {
     DCHECK(heap()->Contains(object));
     DCHECK(!(marking_state()->IsWhite(object)));
     marking_state()->GreyToBlack(object);
+    if (mode == MarkCompactCollector::MarkingWorklistProcessingMode::
+                    kTrackNewlyDiscoveredObjects) {
+      AddNewlyDiscovered(object);
+    }
     Map* map = object->map();
     MarkObject(object, map);
     visitor.Visit(map, object);
@@ -1903,7 +2011,7 @@ void MarkCompactCollector::TrimDescriptorArray(Map* map,
                                                DescriptorArray* descriptors) {
   int number_of_own_descriptors = map->NumberOfOwnDescriptors();
   if (number_of_own_descriptors == 0) {
-    DCHECK(descriptors == heap_->empty_descriptor_array());
+    DCHECK(descriptors == ReadOnlyRoots(heap_).empty_descriptor_array());
     return;
   }
 
@@ -1955,6 +2063,15 @@ void MarkCompactCollector::ClearWeakCollections() {
   while (weak_objects_.ephemeron_hash_tables.Pop(kMainThread, &table)) {
     for (int i = 0; i < table->Capacity(); i++) {
       HeapObject* key = HeapObject::cast(table->KeyAt(i));
+#ifdef VERIFY_HEAP
+      Object* value = table->ValueAt(i);
+
+      if (value->IsHeapObject()) {
+        CHECK_IMPLIES(
+            non_atomic_marking_state()->IsBlackOrGrey(key),
+            non_atomic_marking_state()->IsBlackOrGrey(HeapObject::cast(value)));
+      }
+#endif
       if (!non_atomic_marking_state()->IsBlackOrGrey(key)) {
         table->RemoveEntry(i);
       }
@@ -3840,7 +3957,7 @@ class YoungGenerationExternalStringTableCleaner : public RootVisitor {
             DCHECK(o->IsThinString());
           }
           // Set the entry to the_hole_value (as deleted).
-          *p = heap_->the_hole_value();
+          *p = ReadOnlyRoots(heap_).the_hole_value();
         }
       }
     }

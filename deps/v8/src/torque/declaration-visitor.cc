@@ -156,9 +156,10 @@ void DeclarationVisitor::Visit(TorqueMacroDeclaration* decl,
   CurrentCallableActivator activator(global_context_, macro, decl);
 
   DeclareSignature(signature);
+  Variable* return_variable = nullptr;
   if (!signature.return_type->IsVoidOrNever()) {
-    declarations()->DeclareVariable(kReturnValueVariable,
-                                    signature.return_type);
+    return_variable = declarations()->DeclareVariable(kReturnValueVariable,
+                                                      signature.return_type);
   }
 
   PushControlSplit();
@@ -166,6 +167,7 @@ void DeclarationVisitor::Visit(TorqueMacroDeclaration* decl,
     Visit(body);
   }
   auto changed_vars = PopControlSplit();
+  if (return_variable) changed_vars.insert(return_variable);
   global_context_.AddControlSplitChangedVariables(
       decl, declarations()->GetCurrentSpecializationTypeNamesVector(),
       changed_vars);
@@ -238,11 +240,6 @@ void DeclarationVisitor::Visit(SpecializationDeclaration* decl) {
 }
 
 void DeclarationVisitor::Visit(ReturnStatement* stmt) {
-  const Callable* callable = global_context_.GetCurrentCallable();
-  if (callable->IsMacro() && callable->HasReturnValue()) {
-    MarkVariableModified(
-        Variable::cast(declarations()->LookupValue(kReturnValueVariable)));
-  }
   if (stmt->value) {
     Visit(*stmt->value);
   }
@@ -478,17 +475,17 @@ void DeclarationVisitor::Visit(CallExpression* expr) {
 }
 
 void DeclarationVisitor::Visit(TypeDeclaration* decl) {
-  std::string extends = decl->extends ? *decl->extends : std::string("");
-  std::string* extends_ptr = decl->extends ? &extends : nullptr;
-
   std::string generates = decl->generates ? *decl->generates : std::string("");
-  declarations()->DeclareAbstractType(decl->name, generates, extends_ptr);
+  const AbstractType* type = declarations()->DeclareAbstractType(
+      decl->name, generates, {}, decl->extends);
 
   if (decl->constexpr_generates) {
-    std::string constexpr_name =
-        std::string(CONSTEXPR_TYPE_PREFIX) + decl->name;
+    std::string constexpr_name = CONSTEXPR_TYPE_PREFIX + decl->name;
+    base::Optional<std::string> constexpr_extends;
+    if (decl->extends)
+      constexpr_extends = CONSTEXPR_TYPE_PREFIX + *decl->extends;
     declarations()->DeclareAbstractType(
-        constexpr_name, *decl->constexpr_generates, &(decl->name));
+        constexpr_name, *decl->constexpr_generates, type, constexpr_extends);
   }
 }
 

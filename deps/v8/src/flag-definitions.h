@@ -534,7 +534,7 @@ DEFINE_UINT(wasm_max_mem_pages, v8::internal::wasm::kV8MaxWasmMemoryPages,
             "maximum memory size of a wasm instance")
 DEFINE_UINT(wasm_max_table_size, v8::internal::wasm::kV8MaxWasmTableSize,
             "maximum table size of a wasm instance")
-// Enable liftoff by default on ia32 and x64. More architectures will follow
+// Enable Liftoff by default on ia32 and x64. More architectures will follow
 // once they are implemented and sufficiently tested.
 #if V8_TARGET_ARCH_IA32 || V8_TARGET_ARCH_X64
 DEFINE_BOOL(
@@ -559,9 +559,9 @@ DEFINE_INT(trace_wasm_ast_start, 0,
            "start function for wasm AST trace (inclusive)")
 DEFINE_INT(trace_wasm_ast_end, 0, "end function for wasm AST trace (exclusive)")
 DEFINE_BOOL(liftoff, false,
-            "enable liftoff, the experimental wasm baseline compiler")
+            "enable Liftoff, the baseline compiler for WebAssembly")
 DEFINE_DEBUG_BOOL(trace_liftoff, false,
-                  "trace liftoff, the wasm baseline compiler")
+                  "trace Liftoff, the baseline compiler for WebAssembly")
 DEFINE_DEBUG_BOOL(wasm_break_on_decoder_error, false,
                   "debug break when wasm decoder encounters an error")
 DEFINE_BOOL(wasm_trace_memory, false,
@@ -704,6 +704,9 @@ DEFINE_BOOL(parallel_ephemeron_visiting, true,
 DEFINE_BOOL(
     parallel_ephemeron_marking, true,
     "use parallel marking of objects after visiting ephemerons in atomic pause")
+DEFINE_INT(ephemeron_fixpoint_iterations, 0,
+           "number of fixpoint iterations it takes to switch to linear "
+           "ephemeron algorithm")
 DEFINE_BOOL(trace_concurrent_marking, false, "trace concurrent marking")
 DEFINE_BOOL(black_allocation, true, "use black allocation")
 DEFINE_BOOL(concurrent_store_buffer, true,
@@ -794,7 +797,7 @@ DEFINE_BOOL(optimize_ephemerons, true,
 DEFINE_NEG_NEG_IMPLICATION(optimize_ephemerons, parallel_ephemeron_marking)
 DEFINE_NEG_NEG_IMPLICATION(optimize_ephemerons, parallel_ephemeron_visiting)
 
-DEFINE_BOOL(clear_free_memory, true, "initialize free memory with 0")
+DEFINE_BOOL(clear_free_memory, false, "initialize free memory with 0")
 
 DEFINE_BOOL(young_generation_large_objects, false,
             "allocates large objects by default in the young generation large "
@@ -863,6 +866,7 @@ DEFINE_BOOL(enable_experimental_builtins, false,
             "enable new csa-based experimental builtins")
 DEFINE_BOOL(disallow_code_generation_from_strings, false,
             "disallow eval and friends")
+DEFINE_BOOL(expose_async_hooks, false, "expose async_hooks object")
 
 // builtins.cc
 DEFINE_BOOL(allow_unsafe_function_constructor, false,
@@ -1080,6 +1084,7 @@ DEFINE_BOOL(profile_deserialization, false,
             "Print the time it takes to deserialize the snapshot.")
 DEFINE_BOOL(serialization_statistics, false,
             "Collect statistics on serialized objects.")
+DEFINE_UINT(serialization_chunk_size, 0, "Custom size for serialization chunks")
 
 // Regexp
 DEFINE_BOOL(regexp_optimization, true, "generate optimized regexp code")

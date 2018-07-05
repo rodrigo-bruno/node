@@ -84,11 +84,8 @@ class Value : public Declarable {
  public:
   const std::string& name() const { return name_; }
   virtual bool IsConst() const { return true; }
-  virtual std::string GetValueForDeclaration() const = 0;
-  virtual std::string GetValueForRead() const {
-    return GetValueForDeclaration();
-  }
-  virtual std::string GetValueForWrite() const { UNREACHABLE(); }
+  virtual std::string value() const = 0;
+  virtual std::string RValue() const { return value(); }
   DECLARE_DECLARABLE_BOILERPLATE(Value, value);
   const Type* type() const { return type_; }
 
@@ -104,7 +101,7 @@ class Value : public Declarable {
 class Parameter : public Value {
  public:
   DECLARE_DECLARABLE_BOILERPLATE(Parameter, parameter);
-  std::string GetValueForDeclaration() const override { return var_name_; }
+  std::string value() const override { return var_name_; }
 
  private:
   friend class Declarations;
@@ -119,18 +116,21 @@ class Variable : public Value {
  public:
   DECLARE_DECLARABLE_BOILERPLATE(Variable, variable);
   bool IsConst() const override { return false; }
-  std::string GetValueForDeclaration() const override { return value_; }
-  std::string GetValueForRead() const override {
-    if (type()->IsConstexpr()) {
-      return std::string("*") + value_;
-    } else {
-      return value_ + "->value()";
+  std::string value() const override { return value_; }
+  std::string RValue() const override {
+    if (!IsDefined()) {
+      ReportError("Reading uninitialized variable.");
     }
+    std::string result = "(*" + value() + ")";
+    if (!type()->IsConstexpr()) result += ".value()";
+    return result;
   }
-  std::string GetValueForWrite() const override {
-    return std::string("*") + value_;
+  void Define() {
+    if (defined_ && type()->IsConstexpr()) {
+      ReportError("Cannot re-define a constexpr variable.");
+    }
+    defined_ = true;
   }
-  void Define() { defined_ = true; }
   bool IsDefined() const { return defined_; }
 
  private:
@@ -175,7 +175,7 @@ class Label : public Declarable {
 class Constant : public Value {
  public:
   DECLARE_DECLARABLE_BOILERPLATE(Constant, constant);
-  std::string GetValueForDeclaration() const override { return value_; }
+  std::string value() const override { return value_; }
 
  private:
   friend class Declarations;

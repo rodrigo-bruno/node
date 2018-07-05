@@ -768,11 +768,11 @@ Script* StandardFrame::script() const {
 }
 
 Object* StandardFrame::receiver() const {
-  return isolate()->heap()->undefined_value();
+  return ReadOnlyRoots(isolate()).undefined_value();
 }
 
 Object* StandardFrame::context() const {
-  return isolate()->heap()->undefined_value();
+  return ReadOnlyRoots(isolate()).undefined_value();
 }
 
 int StandardFrame::position() const {
@@ -1077,7 +1077,7 @@ Object* JavaScriptFrame::unchecked_function() const {
   // materialize some closures on the stack. The arguments marker object
   // marks this case.
   DCHECK(function_slot_object()->IsJSFunction() ||
-         isolate()->heap()->arguments_marker() == function_slot_object());
+         ReadOnlyRoots(isolate()).arguments_marker() == function_slot_object());
   return function_slot_object();
 }
 
@@ -1251,7 +1251,7 @@ void JavaScriptBuiltinContinuationWithCatchFrame::SetException(
       kPointerSize;  // Skip over return value slot.
 
   // Only allow setting exception if previous value was the hole.
-  CHECK_EQ(isolate()->heap()->the_hole_value(),
+  CHECK_EQ(ReadOnlyRoots(isolate()).the_hole_value(),
            Memory::Object_at(exception_argument_slot));
   Memory::Object_at(exception_argument_slot) = exception;
 }
@@ -2149,47 +2149,5 @@ InnerPointerToCodeCache::InnerPointerToCodeCacheEntry*
   }
   return entry;
 }
-
-
-// -------------------------------------------------------------------------
-
-
-#define DEFINE_WRAPPER(type, field)                              \
-class field##_Wrapper : public ZoneObject {                      \
- public:  /* NOLINT */                                           \
-  field##_Wrapper(const field& original) : frame_(original) {    \
-  }                                                              \
-  field frame_;                                                  \
-};
-STACK_FRAME_TYPE_LIST(DEFINE_WRAPPER)
-#undef DEFINE_WRAPPER
-
-static StackFrame* AllocateFrameCopy(StackFrame* frame, Zone* zone) {
-#define FRAME_TYPE_CASE(type, field) \
-  case StackFrame::type: { \
-    field##_Wrapper* wrapper = \
-        new(zone) field##_Wrapper(*(reinterpret_cast<field*>(frame))); \
-    return &wrapper->frame_; \
-  }
-
-  switch (frame->type()) {
-    STACK_FRAME_TYPE_LIST(FRAME_TYPE_CASE)
-    default: UNREACHABLE();
-  }
-#undef FRAME_TYPE_CASE
-  return nullptr;
-}
-
-
-Vector<StackFrame*> CreateStackMap(Isolate* isolate, Zone* zone) {
-  ZoneVector<StackFrame*> frames(zone);
-  for (StackFrameIterator it(isolate); !it.done(); it.Advance()) {
-    StackFrame* frame = AllocateFrameCopy(it.frame(), zone);
-    frames.push_back(frame);
-  }
-  return Vector<StackFrame*>(frames.data(), frames.size());
-}
-
-
 }  // namespace internal
 }  // namespace v8

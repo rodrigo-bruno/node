@@ -409,7 +409,7 @@ Handle<ScopeInfo> ScopeInfo::CreateForBootstrapping(Isolate* isolate,
   // Here we add info for context-allocated "this".
   DCHECK_EQ(index, scope_info->ContextLocalNamesIndex());
   if (context_local_count) {
-    scope_info->set(index++, isolate->heap()->this_string());
+    scope_info->set(index++, ReadOnlyRoots(isolate).this_string());
   }
   DCHECK_EQ(index, scope_info->ContextLocalInfosIndex());
   if (context_local_count) {
@@ -454,7 +454,7 @@ Handle<ScopeInfo> ScopeInfo::CreateForBootstrapping(Isolate* isolate,
 }
 
 ScopeInfo* ScopeInfo::Empty(Isolate* isolate) {
-  return isolate->heap()->empty_scope_info();
+  return ReadOnlyRoots(isolate).empty_scope_info();
 }
 
 ScopeType ScopeInfo::scope_type() const {
@@ -591,7 +591,7 @@ String* ScopeInfo::FunctionDebugName() const {
     name = InferredFunctionName();
     if (name->IsString()) return String::cast(name);
   }
-  return GetHeap()->empty_string();
+  return GetReadOnlyRoots().empty_string();
 }
 
 int ScopeInfo::StartPosition() const {
@@ -674,7 +674,7 @@ bool ScopeInfo::VariableIsSynthetic(String* name) {
   // with user declarations, the current temporaries like .generator_object and
   // .result start with a dot, so we can use that as a flag. It's a hack!
   return name->length() == 0 || name->Get(0) == '.' ||
-         name->Equals(name->GetHeap()->this_string());
+         name->Equals(name->GetReadOnlyRoots().this_string());
 }
 
 int ScopeInfo::ModuleIndex(Handle<String> name, VariableMode* mode,

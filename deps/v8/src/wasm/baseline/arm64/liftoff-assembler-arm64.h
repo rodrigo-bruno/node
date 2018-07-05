@@ -628,7 +628,7 @@ bool LiftoffAssembler::emit_type_conversion(WasmOpcode opcode,
                                             LiftoffRegister src, Label* trap) {
   switch (opcode) {
     case kExprI32ConvertI64:
-      Mov(dst.gp().W(), src.gp().W());
+      if (src != dst) Mov(dst.gp().W(), src.gp().W());
       return true;
     case kExprI32SConvertF32:
       Fcvtzs(dst.gp().W(), src.fp().S());  // f32 -> i32 round to zero.
@@ -957,13 +957,19 @@ void LiftoffStackSlots::Construct() {
         asm_->Poke(liftoff::GetRegFromType(slot.src_.reg(), slot.src_.type()),
                    poke_offset);
         break;
-      case LiftoffAssembler::VarState::KIntConst: {
-        UseScratchRegisterScope temps(asm_);
-        Register scratch = temps.AcquireW();
-        asm_->Mov(scratch, slot.src_.i32_const());
-        asm_->Poke(scratch, poke_offset);
+      case LiftoffAssembler::VarState::KIntConst:
+        DCHECK(slot.src_.type() == kWasmI32 || slot.src_.type() == kWasmI64);
+        if (slot.src_.i32_const() == 0) {
+          Register zero_reg = slot.src_.type() == kWasmI32 ? wzr : xzr;
+          asm_->Poke(zero_reg, poke_offset);
+        } else {
+          UseScratchRegisterScope temps(asm_);
+          Register scratch = slot.src_.type() == kWasmI32 ? temps.AcquireW()
+                                                          : temps.AcquireX();
+          asm_->Mov(scratch, int64_t{slot.src_.i32_const()});
+          asm_->Poke(scratch, poke_offset);
+        }
         break;
-      }
     }
     slot_index++;
   }

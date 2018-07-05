@@ -25,7 +25,7 @@ static const char* const VOID_TYPE_STRING = "void";
 static const char* const ARGUMENTS_TYPE_STRING = "constexpr Arguments";
 static const char* const CONTEXT_TYPE_STRING = "Context";
 static const char* const OBJECT_TYPE_STRING = "Object";
-static const char* const CONST_STRING_TYPE_STRING = "constexpr String";
+static const char* const CONST_STRING_TYPE_STRING = "constexpr string";
 static const char* const CODE_TYPE_STRING = "Code";
 static const char* const INTPTR_TYPE_STRING = "intptr";
 static const char* const CONST_INT31_TYPE_STRING = "constexpr int31";
@@ -33,6 +33,7 @@ static const char* const CONST_INT32_TYPE_STRING = "constexpr int32";
 static const char* const CONST_FLOAT64_TYPE_STRING = "constexpr float64";
 
 class Label;
+class Value;
 
 class TypeBase {
  public:
@@ -88,6 +89,7 @@ class Type : public TypeBase {
   virtual std::string GetGeneratedTypeName() const = 0;
   virtual std::string GetGeneratedTNodeTypeName() const = 0;
   virtual bool IsConstexpr() const = 0;
+  virtual const Type* NonConstexprVersion() const = 0;
   static const Type* CommonSupertype(const Type* a, const Type* b);
   void AddAlias(std::string alias) const { aliases_.insert(std::move(alias)); }
 
@@ -121,17 +123,27 @@ class AbstractType final : public Type {
     return name().substr(0, strlen(CONSTEXPR_TYPE_PREFIX)) ==
            CONSTEXPR_TYPE_PREFIX;
   }
+  const Type* NonConstexprVersion() const override {
+    if (IsConstexpr()) return *non_constexpr_version_;
+    return this;
+  }
 
  private:
-  friend class Declarations;
+  friend class TypeOracle;
   AbstractType(const Type* parent, const std::string& name,
-               const std::string& generated_type)
+               const std::string& generated_type,
+               base::Optional<const AbstractType*> non_constexpr_version)
       : Type(Kind::kAbstractType, parent),
         name_(name),
-        generated_type_(generated_type) {}
+        generated_type_(generated_type),
+        non_constexpr_version_(non_constexpr_version) {
+    DCHECK_EQ(non_constexpr_version_.has_value(), IsConstexpr());
+    if (parent) DCHECK(parent->IsConstexpr() == IsConstexpr());
+  }
 
   const std::string name_;
   const std::string generated_type_;
+  base::Optional<const AbstractType*> non_constexpr_version_;
 };
 
 // For now, function pointers are restricted to Code objects of Torque-defined
@@ -147,7 +159,11 @@ class FunctionPointerType final : public Type {
   std::string GetGeneratedTNodeTypeName() const override {
     return parent()->GetGeneratedTNodeTypeName();
   }
-  bool IsConstexpr() const override { return parent()->IsConstexpr(); }
+  bool IsConstexpr() const override {
+    DCHECK(!parent()->IsConstexpr());
+    return false;
+  }
+  const Type* NonConstexprVersion() const override { return this; }
 
   const TypeVector& parameter_types() const { return parameter_types_; }
   const Type* return_type() const { return return_type_; }
@@ -165,7 +181,7 @@ class FunctionPointerType final : public Type {
   }
 
  private:
-  friend class Declarations;
+  friend class TypeOracle;
   FunctionPointerType(const Type* parent, TypeVector parameter_types,
                       const Type* return_type)
       : Type(Kind::kFunctionPointerType, parent),
@@ -197,6 +213,7 @@ class UnionType final : public Type {
     DCHECK_EQ(false, parent()->IsConstexpr());
     return false;
   }
+  const Type* NonConstexprVersion() const override;
 
   friend size_t hash_value(const UnionType& p) {
     size_t result = 0;
@@ -276,14 +293,20 @@ inline std::ostream& operator<<(std::ostream& os, const Type& t) {
 class VisitResult {
  public:
   VisitResult() {}
-  VisitResult(const Type* type, const std::string& variable)
-      : type_(type), variable_(variable) {}
+  VisitResult(const Type* type, const std::string& value)
+      : type_(type), value_(value), declarable_{} {}
+  VisitResult(const Type* type, const Value* declarable);
   const Type* type() const { return type_; }
-  const std::string& variable() const { return variable_; }
+  // const std::string& variable() const { return variable_; }
+  base::Optional<const Value*> declarable() const { return declarable_; }
+  std::string value() const { return value_; }
+  std::string LValue() const;
+  std::string RValue() const;
 
  private:
   const Type* type_;
-  std::string variable_;
+  std::string value_;
+  base::Optional<const Value*> declarable_;
 };
 
 class VisitResultVector : public std::vector<VisitResult> {
