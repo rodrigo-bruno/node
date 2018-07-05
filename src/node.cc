@@ -872,7 +872,9 @@ void PromiseRejectCallback(PromiseRejectMessage message) {
     callback = env->promise_reject_handled_function();
     value = Undefined(isolate);
   } else {
-    UNREACHABLE();
+    // Ignore reject/resolve after resolved events for now.
+    // TODO(benjamingr) warn about misuse of Promise constructor.
+    return;
   }
 
   Local<Value> args[] = { promise, value };
