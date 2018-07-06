@@ -1588,7 +1588,10 @@ bool Heap::ReserveSpace(Reservation* reservations, std::vector<Address>* maps) {
          space < SerializerDeserializer::kNumberOfSpaces; space++) {
       Reservation* reservation = &reservations[space];
       DCHECK_LE(1, reservation->size());
-      if (reservation->at(0).size == 0) continue;
+      if (reservation->at(0).size == 0) {
+        DCHECK_EQ(1, reservation->size());
+        continue;
+      }
       bool perform_gc = false;
       if (space == MAP_SPACE) {
         // We allocate each map individually to avoid fragmentation.
@@ -4507,7 +4510,7 @@ HeapObject* Heap::EnsureImmovableCode(HeapObject* heap_object,
   return heap_object;
 }
 
-HeapObject* Heap::AllocateRawWithLigthRetry(int size, AllocationSpace space,
+HeapObject* Heap::AllocateRawWithLightRetry(int size, AllocationSpace space,
                                             AllocationAlignment alignment) {
   HeapObject* result;
   AllocationResult alloc = AllocateRaw(size, space, alignment);
@@ -4531,7 +4534,7 @@ HeapObject* Heap::AllocateRawWithLigthRetry(int size, AllocationSpace space,
 HeapObject* Heap::AllocateRawWithRetryOrFail(int size, AllocationSpace space,
                                              AllocationAlignment alignment) {
   AllocationResult alloc;
-  HeapObject* result = AllocateRawWithLigthRetry(size, space, alignment);
+  HeapObject* result = AllocateRawWithLightRetry(size, space, alignment);
   if (result) return result;
 
   isolate()->counters()->gc_last_resort_from_handles()->Increment();

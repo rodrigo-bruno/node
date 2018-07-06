@@ -71,8 +71,6 @@ enum ContextLookupFlags {
   V(ASYNC_GENERATOR_AWAIT_UNCAUGHT, JSFunction, async_generator_await_uncaught)
 
 #define NATIVE_CONTEXT_IMPORTED_FIELDS(V)                                 \
-  V(ARRAY_POP_INDEX, JSFunction, array_pop)                               \
-  V(ARRAY_PUSH_INDEX, JSFunction, array_push)                             \
   V(ARRAY_SHIFT_INDEX, JSFunction, array_shift)                           \
   V(ARRAY_SPLICE_INDEX, JSFunction, array_splice)                         \
   V(ARRAY_UNSHIFT_INDEX, JSFunction, array_unshift)                       \
@@ -96,6 +94,7 @@ enum ContextLookupFlags {
   V(PROMISE_FUNCTION_INDEX, JSFunction, promise_function)                 \
   V(RANGE_ERROR_FUNCTION_INDEX, JSFunction, range_error_function)         \
   V(REFERENCE_ERROR_FUNCTION_INDEX, JSFunction, reference_error_function) \
+  V(RESOLVE_LOCALE_FUNCTION_INDEX, JSFunction, resolve_locale)            \
   V(SET_ADD_INDEX, JSFunction, set_add)                                   \
   V(SET_DELETE_INDEX, JSFunction, set_delete)                             \
   V(SET_HAS_INDEX, JSFunction, set_has)                                   \
@@ -271,7 +270,6 @@ enum ContextLookupFlags {
     initial_regexp_string_iterator_prototype_map_index)                        \
   V(REGEXP_RESULT_MAP_INDEX, Map, regexp_result_map)                           \
   V(SCRIPT_CONTEXT_TABLE_INDEX, ScriptContextTable, script_context_table)      \
-  V(SCRIPT_FUNCTION_INDEX, JSFunction, script_function)                        \
   V(SECURITY_TOKEN_INDEX, Object, security_token)                              \
   V(SELF_WEAK_CELL_INDEX, WeakCell, self_weak_cell)                            \
   V(SERIALIZED_OBJECTS, FixedArray, serialized_objects)                        \

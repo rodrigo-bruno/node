@@ -1237,5 +1237,102 @@ MaybeHandle<JSReceiver> Intl::UnwrapReceiver(Isolate* isolate,
   return Handle<JSReceiver>::cast(new_receiver);
 }
 
+// TODO(bstell): Convert this to C++ instead of calling out to the
+// JS implementation.
+MaybeHandle<JSObject> Intl::ResolveLocale(Isolate* isolate, const char* service,
+                                          Handle<Object> requestedLocales,
+                                          Handle<Object> options) {
+  Handle<String> service_str =
+      isolate->factory()->NewStringFromAsciiChecked(service);
+
+  Handle<JSFunction> resolve_locale_function = isolate->resolve_locale();
+
+  Handle<Object> result;
+  Handle<Object> undefined_value(ReadOnlyRoots(isolate).undefined_value(),
+                                 isolate);
+  Handle<Object> args[] = {service_str, requestedLocales, options};
+  ASSIGN_RETURN_ON_EXCEPTION(
+      isolate, result,
+      Execution::Call(isolate, resolve_locale_function, undefined_value,
+                      arraysize(args), args),
+      JSObject);
+
+  return Handle<JSObject>::cast(result);
+}
+
+Maybe<bool> Intl::GetStringOption(Isolate* isolate, Handle<JSReceiver> options,
+                                  const char* property,
+                                  std::vector<const char*> values,
+                                  const char* service,
+                                  std::unique_ptr<char[]>* result) {
+  Handle<String> property_str =
+      isolate->factory()->NewStringFromAsciiChecked(property);
+
+  // 1. Let value be ? Get(options, property).
+  Handle<Object> value;
+  ASSIGN_RETURN_ON_EXCEPTION_VALUE(
+      isolate, value, Object::GetPropertyOrElement(options, property_str),
+      Nothing<bool>());
+
+  if (value->IsUndefined(isolate)) {
+    return Just(false);
+  }
+
+  // 2. c. Let value be ? ToString(value).
+  Handle<String> value_str;
+  ASSIGN_RETURN_ON_EXCEPTION_VALUE(
+      isolate, value_str, Object::ToString(isolate, value), Nothing<bool>());
+  std::unique_ptr<char[]> value_cstr = value_str->ToCString();
+
+  // 2. d. if values is not undefined, then
+  if (values.size() > 0) {
+    // 2. d. i. If values does not contain an element equal to value,
+    // throw a RangeError exception.
+    for (size_t i = 0; i < values.size(); i++) {
+      if (strcmp(values.at(i), value_cstr.get()) == 0) {
+        // 2. e. return value
+        *result = std::move(value_cstr);
+        return Just(true);
+      }
+    }
+
+    Handle<String> service_str =
+        isolate->factory()->NewStringFromAsciiChecked(service);
+    THROW_NEW_ERROR_RETURN_VALUE(
+        isolate,
+        NewRangeError(MessageTemplate::kValueOutOfRange, value, service_str,
+                      property_str),
+        Nothing<bool>());
+  }
+
+  // 2. e. return value
+  *result = std::move(value_cstr);
+  return Just(true);
+}
+
+V8_WARN_UNUSED_RESULT Maybe<bool> Intl::GetBoolOption(
+    Isolate* isolate, Handle<JSReceiver> options, const char* property,
+    const char* service, bool* result) {
+  Handle<String> property_str =
+      isolate->factory()->NewStringFromAsciiChecked(property);
+
+  // 1. Let value be ? Get(options, property).
+  Handle<Object> value;
+  ASSIGN_RETURN_ON_EXCEPTION_VALUE(
+      isolate, value, Object::GetPropertyOrElement(options, property_str),
+      Nothing<bool>());
+
+  // 2. If value is not undefined, then
+  if (!value->IsUndefined(isolate)) {
+    // 2. b. i. Let value be ToBoolean(value).
+    *result = value->BooleanValue(isolate);
+
+    // 2. e. return value
+    return Just(true);
+  }
+
+  return Just(false);
+}
+
 }  // namespace internal
 }  // namespace v8

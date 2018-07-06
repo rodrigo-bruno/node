@@ -29,7 +29,7 @@ constexpr auto kStack = LiftoffAssembler::VarState::kStack;
 
 namespace {
 
-#define __ asm_->
+#define __ asm_.
 
 #define TRACE(...)                                            \
   do {                                                        \
@@ -131,14 +131,9 @@ class LiftoffCompiler {
     }
   };
 
-  LiftoffCompiler(LiftoffAssembler* liftoff_asm,
-                  compiler::CallDescriptor* call_descriptor, ModuleEnv* env,
-                  SourcePositionTableBuilder* source_position_table_builder,
-                  std::vector<trap_handler::ProtectedInstructionData>*
-                      protected_instructions,
+  LiftoffCompiler(compiler::CallDescriptor* call_descriptor, ModuleEnv* env,
                   Zone* compilation_zone)
-      : asm_(liftoff_asm),
-        descriptor_(
+      : descriptor_(
             GetLoweredCallDescriptor(compilation_zone, call_descriptor)),
         env_(env),
         min_size_(uint64_t{env_->module->initial_pages} * wasm::kWasmPageSize),
@@ -146,14 +141,28 @@ class LiftoffCompiler {
                                ? env_->module->maximum_pages
                                : wasm::kV8MaxWasmMemoryPages} *
                   wasm::kWasmPageSize),
-        source_position_table_builder_(source_position_table_builder),
-        protected_instructions_(protected_instructions),
         compilation_zone_(compilation_zone),
         safepoint_table_builder_(compilation_zone_) {}
 
   ~LiftoffCompiler() { BindUnboundLabels(nullptr); }
 
   bool ok() const { return ok_; }
+
+  void GetCode(CodeDesc* desc) { asm_.GetCode(nullptr, desc); }
+
+  OwnedVector<uint8_t> GetSourcePositionTable() {
+    return source_position_table_builder_.ToSourcePositionTableVector();
+  }
+
+  OwnedVector<trap_handler::ProtectedInstructionData> GetProtectedInstructions()
+      const {
+    return OwnedVector<trap_handler::ProtectedInstructionData>::Of(
+        protected_instructions_);
+  }
+
+  uint32_t GetTotalFrameSlotCount() const {
+    return __ GetTotalFrameSlotCount();
+  }
 
   void unsupported(Decoder* decoder, const char* reason) {
     ok_ = false;
@@ -163,8 +172,8 @@ class LiftoffCompiler {
   }
 
   bool DidAssemblerBailout(Decoder* decoder) {
-    if (decoder->failed() || !asm_->did_bailout()) return false;
-    unsupported(decoder, asm_->bailout_reason());
+    if (decoder->failed() || !__ did_bailout()) return false;
+    unsupported(decoder, __ bailout_reason());
     return true;
   }
 
@@ -380,7 +389,7 @@ class LiftoffCompiler {
     if (is_mem_out_of_bounds && env_->use_trap_handler) {
       uint32_t pc = static_cast<uint32_t>(__ pc_offset());
       DCHECK_EQ(pc, __ pc_offset());
-      protected_instructions_->emplace_back(
+      protected_instructions_.emplace_back(
           trap_handler::ProtectedInstructionData{ool.pc, pc});
     }
 
@@ -398,10 +407,10 @@ class LiftoffCompiler {
 
     if (!ool.regs_to_save.is_empty()) __ PushRegisters(ool.regs_to_save);
 
-    source_position_table_builder_->AddPosition(
+    source_position_table_builder_.AddPosition(
         __ pc_offset(), SourcePosition(ool.position), false);
     __ CallRuntimeStub(ool.stub);
-    safepoint_table_builder_.DefineSafepoint(asm_, Safepoint::kSimple, 0,
+    safepoint_table_builder_.DefineSafepoint(&asm_, Safepoint::kSimple, 0,
                                              Safepoint::kNoLazyDeopt);
     DCHECK_EQ(ool.continuation.get()->is_bound(), is_stack_check);
     if (!ool.regs_to_save.is_empty()) __ PopRegisters(ool.regs_to_save);
@@ -420,7 +429,7 @@ class LiftoffCompiler {
     __ PatchPrepareStackFrame(pc_offset_stack_frame_construction_,
                               __ GetTotalFrameSlotCount());
     __ FinishCode();
-    safepoint_table_builder_.Emit(asm_, __ GetTotalFrameSlotCount());
+    safepoint_table_builder_.Emit(&asm_, __ GetTotalFrameSlotCount());
     // The previous calls may have also generated a bailout.
     DidAssemblerBailout(decoder);
   }
@@ -428,6 +437,7 @@ class LiftoffCompiler {
   void OnFirstError(Decoder* decoder) {
     ok_ = false;
     BindUnboundLabels(decoder);
+    asm_.AbortCompilation();
   }
 
   void NextInstruction(Decoder* decoder, WasmOpcode opcode) {
@@ -544,7 +554,7 @@ class LiftoffCompiler {
                                                                   Register),
                                 ExternalReference (*fallback_fn)()) {
     auto emit_with_c_fallback = [=](LiftoffRegister dst, LiftoffRegister src) {
-      if (emit_fn && (asm_->*emit_fn)(dst.gp(), src.gp())) return;
+      if (emit_fn && (asm_.*emit_fn)(dst.gp(), src.gp())) return;
       ExternalReference ext_ref = fallback_fn();
       ValueType sig_i_i_reps[] = {kWasmI32, kWasmI32};
       FunctionSig sig_i_i(1, 1, sig_i_i_reps);
@@ -558,7 +568,7 @@ class LiftoffCompiler {
       bool (LiftoffAssembler::*emit_fn)(DoubleRegister, DoubleRegister),
       ExternalReference (*fallback_fn)()) {
     auto emit_with_c_fallback = [=](LiftoffRegister dst, LiftoffRegister src) {
-      if ((asm_->*emit_fn)(dst.fp(), src.fp())) return;
+      if ((asm_.*emit_fn)(dst.fp(), src.fp())) return;
       ExternalReference ext_ref = fallback_fn();
       ValueType sig_reps[] = {type};
       FunctionSig sig(0, 1, sig_reps);
@@ -1387,8 +1397,8 @@ class LiftoffCompiler {
     __ Store(info.gp(), no_reg, offsetof(wasm::MemoryTracingInfo, mem_rep),
              address, StoreType::kI32Store8, pinned);
 
-    source_position_table_builder_->AddPosition(
-        __ pc_offset(), SourcePosition(position), false);
+    source_position_table_builder_.AddPosition(__ pc_offset(),
+                                               SourcePosition(position), false);
 
     Register args[] = {info.gp()};
     GenerateRuntimeCall(Runtime::kWasmTraceMemory, arraysize(args), args);
@@ -1412,7 +1422,7 @@ class LiftoffCompiler {
               LiftoffAssembler::kWasmIntPtr);
     } else {
       DCHECK(param_loc.IsCallerFrameSlot());
-      LiftoffStackSlots stack_slots(asm_);
+      LiftoffStackSlots stack_slots(&asm_);
       stack_slots.Add(LiftoffAssembler::VarState(LiftoffAssembler::kWasmIntPtr,
                                                  LiftoffRegister(args[0])));
       stack_slots.Construct();
@@ -1423,7 +1433,7 @@ class LiftoffCompiler {
     LiftoffRegister centry(kJavaScriptCallCodeStartRegister);
     LOAD_INSTANCE_FIELD(centry, CEntryStub, kPointerLoadType);
     __ CallRuntimeWithCEntry(runtime_function, centry.gp());
-    safepoint_table_builder_.DefineSafepoint(asm_, Safepoint::kSimple, 0,
+    safepoint_table_builder_.DefineSafepoint(&asm_, Safepoint::kSimple, 0,
                                              Safepoint::kNoLazyDeopt);
   }
 
@@ -1547,7 +1557,7 @@ class LiftoffCompiler {
     if (input.gp() != param_reg) __ Move(param_reg, input.gp(), kWasmI32);
 
     __ CallRuntimeStub(wasm::WasmCode::kWasmGrowMemory);
-    safepoint_table_builder_.DefineSafepoint(asm_, Safepoint::kSimple, 0,
+    safepoint_table_builder_.DefineSafepoint(&asm_, Safepoint::kSimple, 0,
                                              Safepoint::kNoLazyDeopt);
 
     if (kReturnRegister0 != result.gp()) {
@@ -1594,12 +1604,12 @@ class LiftoffCompiler {
       LiftoffRegister* explicit_instance = &target_instance;
       Register target_reg = target.gp();
       __ PrepareCall(imm.sig, call_descriptor, &target_reg, explicit_instance);
-      source_position_table_builder_->AddPosition(
+      source_position_table_builder_.AddPosition(
           __ pc_offset(), SourcePosition(decoder->position()), false);
 
       __ CallIndirect(imm.sig, call_descriptor, target_reg);
 
-      safepoint_table_builder_.DefineSafepoint(asm_, Safepoint::kSimple, 0,
+      safepoint_table_builder_.DefineSafepoint(&asm_, Safepoint::kSimple, 0,
                                                Safepoint::kNoLazyDeopt);
 
       __ FinishCall(imm.sig, call_descriptor);
@@ -1607,14 +1617,14 @@ class LiftoffCompiler {
       // A direct call within this module just gets the current instance.
       __ PrepareCall(imm.sig, call_descriptor);
 
-      source_position_table_builder_->AddPosition(
+      source_position_table_builder_.AddPosition(
           __ pc_offset(), SourcePosition(decoder->position()), false);
 
       // Just encode the function index. This will be patched at instantiation.
       Address addr = static_cast<Address>(imm.index);
       __ CallNativeWasmCode(addr);
 
-      safepoint_table_builder_.DefineSafepoint(asm_, Safepoint::kSimple, 0,
+      safepoint_table_builder_.DefineSafepoint(&asm_, Safepoint::kSimple, 0,
                                                Safepoint::kNoLazyDeopt);
 
       __ FinishCall(imm.sig, call_descriptor);
@@ -1727,7 +1737,7 @@ class LiftoffCompiler {
             pinned);
     LiftoffRegister* explicit_instance = &tmp_const;
 
-    source_position_table_builder_->AddPosition(
+    source_position_table_builder_.AddPosition(
         __ pc_offset(), SourcePosition(decoder->position()), false);
 
     auto call_descriptor =
@@ -1739,7 +1749,7 @@ class LiftoffCompiler {
     __ PrepareCall(imm.sig, call_descriptor, &target, explicit_instance);
     __ CallIndirect(imm.sig, call_descriptor, target);
 
-    safepoint_table_builder_.DefineSafepoint(asm_, Safepoint::kSimple, 0,
+    safepoint_table_builder_.DefineSafepoint(&asm_, Safepoint::kSimple, 0,
                                              Safepoint::kNoLazyDeopt);
 
     __ FinishCall(imm.sig, call_descriptor);
@@ -1780,7 +1790,7 @@ class LiftoffCompiler {
   }
 
  private:
-  LiftoffAssembler* const asm_;
+  LiftoffAssembler asm_;
   compiler::CallDescriptor* const descriptor_;
   ModuleEnv* const env_;
   // {min_size_} and {max_size_} are cached values computed from the ModuleEnv.
@@ -1788,8 +1798,8 @@ class LiftoffCompiler {
   const uint64_t max_size_;
   bool ok_ = true;
   std::vector<OutOfLineCode> out_of_line_code_;
-  SourcePositionTableBuilder* const source_position_table_builder_;
-  std::vector<trap_handler::ProtectedInstructionData>* protected_instructions_;
+  SourcePositionTableBuilder source_position_table_builder_;
+  std::vector<trap_handler::ProtectedInstructionData> protected_instructions_;
   // Zone used to store information during compilation. The result will be
   // stored independently, such that this zone can die together with the
   // LiftoffCompiler after compilation.
@@ -1805,10 +1815,10 @@ class LiftoffCompiler {
     StdoutStream os;
     for (int control_depth = decoder->control_depth() - 1; control_depth >= -1;
          --control_depth) {
-      LiftoffAssembler::CacheState* cache_state =
-          control_depth == -1
-              ? asm_->cache_state()
-              : &decoder->control_at(control_depth)->label_state;
+      auto* cache_state =
+          control_depth == -1 ? __ cache_state()
+                              : &decoder->control_at(control_depth)
+                                     ->label_state;
       os << PrintCollection(cache_state->stack_state);
       if (control_depth != -1) PrintF("; ");
     }
@@ -1832,19 +1842,20 @@ bool LiftoffCompilationUnit::ExecuteCompilation() {
       compiler::GetWasmCallDescriptor(&zone, wasm_unit_->func_body_.sig);
   base::Optional<TimedHistogramScope> liftoff_compile_time_scope(
       base::in_place, wasm_unit_->counters_->liftoff_compile_time());
-  DCHECK(protected_instructions_.empty());
   wasm::WasmFullDecoder<wasm::Decoder::kValidate, wasm::LiftoffCompiler>
-      decoder(&zone, module, wasm_unit_->func_body_, &asm_, call_descriptor,
-              wasm_unit_->env_, &source_position_table_builder_,
-              &protected_instructions_, &zone);
+      decoder(&zone, module, wasm_unit_->func_body_, call_descriptor,
+              wasm_unit_->env_, &zone);
   decoder.Decode();
   liftoff_compile_time_scope.reset();
-  if (!decoder.interface().ok()) {
+  wasm::LiftoffCompiler* compiler = &decoder.interface();
+  if (decoder.failed()) return false;  // validation error
+  if (!compiler->ok()) {
     // Liftoff compilation failed.
     wasm_unit_->counters_->liftoff_unsupported_functions()->Increment();
     return false;
   }
-  if (decoder.failed()) return false;  // Validation error
+
+  wasm_unit_->counters_->liftoff_compiled_functions()->Increment();
 
   if (FLAG_trace_wasm_decode_time) {
     double compile_ms = compile_timer.Elapsed().InMillisecondsF();
@@ -1856,39 +1867,28 @@ bool LiftoffCompilationUnit::ExecuteCompilation() {
         compile_ms);
   }
 
+  CodeDesc desc;
+  compiler->GetCode(&desc);
+  OwnedVector<byte> source_positions = compiler->GetSourcePositionTable();
+  OwnedVector<trap_handler::ProtectedInstructionData> protected_instructions =
+      compiler->GetProtectedInstructions();
+  uint32_t frame_slot_count = compiler->GetTotalFrameSlotCount();
+  int safepoint_table_offset = compiler->GetSafepointTableOffset();
+
+  code_ = wasm_unit_->native_module_->AddCode(
+      wasm_unit_->func_index_, desc, frame_slot_count, safepoint_table_offset,
+      0, std::move(protected_instructions), std::move(source_positions),
+      wasm::WasmCode::kLiftoff);
+
   // Record the memory cost this unit places on the system until
   // it is finalized.
-  wasm_unit_->memory_cost_ =
-      asm_.pc_offset() + protected_instructions_.size() *
-                             sizeof(trap_handler::ProtectedInstructionData);
+  wasm_unit_->memory_cost_ = sizeof(*this);
 
-  safepoint_table_offset_ = decoder.interface().GetSafepointTableOffset();
-  wasm_unit_->counters_->liftoff_compiled_functions()->Increment();
   return true;
 }
 
-wasm::WasmCode* LiftoffCompilationUnit::FinishCompilation(
-    wasm::ErrorThrower* thrower) {
-  CodeDesc desc;
-  asm_.GetCode(nullptr, &desc);
-
-  OwnedVector<byte> source_positions =
-      source_position_table_builder_.ToSourcePositionTableVector();
-  auto protected_instructions_copy =
-      OwnedVector<trap_handler::ProtectedInstructionData>::Of(
-          protected_instructions_);
-  wasm::WasmCode* code = wasm_unit_->native_module_->AddCode(
-      wasm_unit_->func_index_, desc, asm_.GetTotalFrameSlotCount(),
-      safepoint_table_offset_, 0, std::move(protected_instructions_copy),
-      std::move(source_positions), wasm::WasmCode::kLiftoff);
-
-  return code;
-}
-
-void LiftoffCompilationUnit::AbortCompilation() {
-  // The compilation is aborted. Put the assembler in a clean mode before
-  // its deletion.
-  asm_.AbortCompilation();
+wasm::WasmCode* LiftoffCompilationUnit::FinishCompilation(wasm::ErrorThrower*) {
+  return code_;
 }
 
 #undef __

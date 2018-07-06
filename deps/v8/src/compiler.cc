@@ -227,8 +227,6 @@ CompilationJob::Status OptimizedCompilationJob::FinalizeJob(Isolate* isolate) {
   DCHECK(ThreadId::Current().Equals(isolate->thread_id()));
   DisallowCodeDependencyChange no_dependency_change;
   DisallowJavascriptExecution no_js(isolate);
-  CHECK(!compilation_info()->dependencies() ||
-        !compilation_info()->dependencies()->HasAborted());
 
   // Delegate to the underlying implementation.
   DCHECK_EQ(state(), State::kReadyToFinalize);
@@ -802,8 +800,6 @@ CompilationJob::Status FinalizeOptimizedCompilationJob(
   if (job->state() == CompilationJob::State::kReadyToFinalize) {
     if (shared->optimization_disabled()) {
       job->RetryOptimization(BailoutReason::kOptimizationDisabled);
-    } else if (compilation_info->dependencies()->HasAborted()) {
-      job->RetryOptimization(BailoutReason::kBailedOutDueToDependencyChange);
     } else if (job->FinalizeJob(isolate) == CompilationJob::SUCCEEDED) {
       job->RecordCompilationStats();
       job->RecordFunctionCompilation(CodeEventListener::LAZY_COMPILE_TAG,
@@ -1629,7 +1625,7 @@ MaybeHandle<SharedFunctionInfo> Compiler::GetSharedFunctionInfoForScript(
   if (extension == nullptr) {
     bool can_consume_code_cache =
         compile_options == ScriptCompiler::kConsumeCodeCache &&
-        !isolate->debug()->is_loaded();
+        !isolate->debug()->is_active();
     if (can_consume_code_cache) {
       compile_timer.set_consuming_code_cache();
     }
@@ -1720,7 +1716,7 @@ MaybeHandle<JSFunction> Compiler::GetWrappedFunction(
   MaybeHandle<SharedFunctionInfo> maybe_result;
   bool can_consume_code_cache =
       compile_options == ScriptCompiler::kConsumeCodeCache &&
-      !isolate->debug()->is_loaded();
+      !isolate->debug()->is_active();
   if (can_consume_code_cache) {
     compile_timer.set_consuming_code_cache();
     // Then check cached code provided by embedder.

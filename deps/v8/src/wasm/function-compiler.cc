@@ -8,6 +8,7 @@
 #include "src/counters.h"
 #include "src/macro-assembler-inl.h"
 #include "src/wasm/baseline/liftoff-compiler.h"
+#include "src/wasm/wasm-code-manager.h"
 
 namespace v8 {
 namespace internal {
@@ -118,7 +119,6 @@ void WasmCompilationUnit::SwitchMode(CompilationMode new_mode) {
       return;
     case CompilationMode::kTurbofan:
       DCHECK(!turbofan_unit_);
-      if (liftoff_unit_ != nullptr) liftoff_unit_->AbortCompilation();
       liftoff_unit_.reset();
       turbofan_unit_.reset(new compiler::TurbofanWasmCompilationUnit(this));
       return;

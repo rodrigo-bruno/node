@@ -76,7 +76,7 @@ int PropertyDetails::field_width_in_words() const {
 // pointer rather than looking up the instance type.
 TYPE_CHECKER(AllocationSite, ALLOCATION_SITE_TYPE)
 TYPE_CHECKER(BigInt, BIGINT_TYPE)
-TYPE_CHECKER(BoilerplateDescription, BOILERPLATE_DESCRIPTION_TYPE)
+TYPE_CHECKER(ObjectBoilerplateDescription, OBJECT_BOILERPLATE_DESCRIPTION_TYPE)
 TYPE_CHECKER(BreakPoint, TUPLE2_TYPE)
 TYPE_CHECKER(BreakPointInfo, TUPLE2_TYPE)
 TYPE_CHECKER(ByteArray, BYTE_ARRAY_TYPE)
@@ -85,8 +85,6 @@ TYPE_CHECKER(CallHandlerInfo, CALL_HANDLER_INFO_TYPE)
 TYPE_CHECKER(Cell, CELL_TYPE)
 TYPE_CHECKER(Code, CODE_TYPE)
 TYPE_CHECKER(CodeDataContainer, CODE_DATA_CONTAINER_TYPE)
-TYPE_CHECKER(ConstantElementsPair, TUPLE2_TYPE)
-TYPE_CHECKER(CompileTimeValue, TUPLE2_TYPE)
 TYPE_CHECKER(CoverageInfo, FIXED_ARRAY_TYPE)
 TYPE_CHECKER(DescriptorArray, DESCRIPTOR_ARRAY_TYPE)
 TYPE_CHECKER(EphemeronHashTable, EPHEMERON_HASH_TABLE_TYPE)
@@ -208,45 +206,49 @@ bool HeapObject::IsExternal(Isolate* isolate) const {
 HEAP_OBJECT_TYPE_LIST(IS_TYPE_FUNCTION_DEF)
 #undef IS_TYPE_FUNCTION_DEF
 
-#define IS_TYPE_FUNCTION_DEF(Type, Value)             \
-  bool Object::Is##Type(Isolate* isolate) const {     \
-    return this == ReadOnlyRoots(isolate).Value();    \
-  }                                                   \
-  bool HeapObject::Is##Type(Isolate* isolate) const { \
-    return this == ReadOnlyRoots(isolate).Value();    \
-  }
+#define IS_TYPE_FUNCTION_DEF(Type, Value)                        \
+  bool Object::Is##Type(Isolate* isolate) const {                \
+    return Is##Type(ReadOnlyRoots(isolate->heap()));             \
+  }                                                              \
+  bool Object::Is##Type(ReadOnlyRoots roots) const {             \
+    return this == roots.Value();                                \
+  }                                                              \
+  bool Object::Is##Type() const {                                \
+    return IsHeapObject() && HeapObject::cast(this)->Is##Type(); \
+  }                                                              \
+  bool HeapObject::Is##Type(Isolate* isolate) const {            \
+    return Object::Is##Type(isolate);                            \
+  }                                                              \
+  bool HeapObject::Is##Type(ReadOnlyRoots roots) const {         \
+    return Object::Is##Type(roots);                              \
+  }                                                              \
+  bool HeapObject::Is##Type() const { return Is##Type(GetReadOnlyRoots()); }
 ODDBALL_LIST(IS_TYPE_FUNCTION_DEF)
 #undef IS_TYPE_FUNCTION_DEF
 
 bool Object::IsNullOrUndefined(Isolate* isolate) const {
-  ReadOnlyRoots roots(isolate);
-  return this == roots.null_value() || this == roots.undefined_value();
+  return IsNullOrUndefined(ReadOnlyRoots(isolate));
+}
+
+bool Object::IsNullOrUndefined(ReadOnlyRoots roots) const {
+  return IsNull(roots) || IsUndefined(roots);
+}
+
+bool Object::IsNullOrUndefined() const {
+  return IsHeapObject() && HeapObject::cast(this)->IsNullOrUndefined();
 }
 
 bool HeapObject::IsNullOrUndefined(Isolate* isolate) const {
-  ReadOnlyRoots roots(isolate);
-  return this == roots.null_value() || this == roots.undefined_value();
+  return Object::IsNullOrUndefined(isolate);
 }
 
-#ifdef DEBUG
-#define IS_TYPE_FUNCTION_DEF(Type, Value)                                  \
-  bool Object::Is##Type() const {                                          \
-    return IsHeapObject() && HeapObject::cast(this)->Is##Type();           \
-  }                                                                        \
-  bool HeapObject::Is##Type() const {                                      \
-    return IsOddball() && Oddball::cast(this)->kind() == Oddball::k##Type; \
-  }
-ODDBALL_LIST(IS_TYPE_FUNCTION_DEF)
-#undef IS_TYPE_FUNCTION_DEF
-
-bool Object::IsNullOrUndefined() const {
-  return this->IsNull() || this->IsUndefined();
+bool HeapObject::IsNullOrUndefined(ReadOnlyRoots roots) const {
+  return Object::IsNullOrUndefined(roots);
 }
 
 bool HeapObject::IsNullOrUndefined() const {
-  return this->IsNull() || this->IsUndefined();
+  return IsNullOrUndefined(GetReadOnlyRoots());
 }
-#endif
 
 bool HeapObject::IsString() const {
   return map()->instance_type() < FIRST_NONSTRING_TYPE;
@@ -595,10 +597,9 @@ CAST_ACCESSOR(AllocationMemento)
 CAST_ACCESSOR(AllocationSite)
 CAST_ACCESSOR(AsyncGeneratorRequest)
 CAST_ACCESSOR(BigInt)
-CAST_ACCESSOR(BoilerplateDescription)
+CAST_ACCESSOR(ObjectBoilerplateDescription)
 CAST_ACCESSOR(Cell)
-CAST_ACCESSOR(ConstantElementsPair)
-CAST_ACCESSOR(CompileTimeValue)
+CAST_ACCESSOR(ArrayBoilerplateDescription)
 CAST_ACCESSOR(DescriptorArray)
 CAST_ACCESSOR(EphemeronHashTable)
 CAST_ACCESSOR(EnumCache)
@@ -718,8 +719,7 @@ Representation Object::OptimalRepresentation() {
     return Representation::Smi();
   } else if (FLAG_track_double_fields && IsHeapNumber()) {
     return Representation::Double();
-  } else if (FLAG_track_computed_fields &&
-             IsUninitialized(HeapObject::cast(this)->GetIsolate())) {
+  } else if (FLAG_track_computed_fields && IsUninitialized()) {
     return Representation::None();
   } else if (FLAG_track_heap_object_fields) {
     DCHECK(IsHeapObject());
@@ -1633,7 +1633,7 @@ void JSObject::WriteToField(int descriptor, PropertyDetails details,
   FieldIndex index = FieldIndex::ForDescriptor(map(), descriptor);
   if (details.representation().IsDouble()) {
     // Nothing more to be done.
-    if (value->IsUninitialized(this->GetIsolate())) {
+    if (value->IsUninitialized()) {
       return;
     }
     // Manipulating the signaling NaN used for the hole and uninitialized
@@ -1724,10 +1724,8 @@ void Object::VerifyApiCallResultType() {
 #if DEBUG
   if (IsSmi()) return;
   DCHECK(IsHeapObject());
-  Isolate* isolate = HeapObject::cast(this)->GetIsolate();
   if (!(IsString() || IsSymbol() || IsJSReceiver() || IsHeapNumber() ||
-        IsBigInt() || IsUndefined(isolate) || IsTrue(isolate) ||
-        IsFalse(isolate) || IsNull(isolate))) {
+        IsBigInt() || IsUndefined() || IsTrue() || IsFalse() || IsNull())) {
     FATAL("API call returned invalid object");
   }
 #endif  // DEBUG
@@ -2413,13 +2411,6 @@ ACCESSORS(Tuple2, value1, Object, kValue1Offset)
 ACCESSORS(Tuple2, value2, Object, kValue2Offset)
 ACCESSORS(Tuple3, value3, Object, kValue3Offset)
 
-SMI_ACCESSORS(ConstantElementsPair, elements_kind, kElementsKindOffset)
-ACCESSORS(ConstantElementsPair, constant_values, FixedArrayBase,
-          kConstantValuesOffset)
-bool ConstantElementsPair::is_empty() const {
-  return constant_values()->length() == 0;
-}
-
 ACCESSORS(TemplateObjectDescription, raw_strings, FixedArray, kRawStringsOffset)
 ACCESSORS(TemplateObjectDescription, cooked_strings, FixedArray,
           kCookedStringsOffset)
@@ -2591,7 +2582,7 @@ void JSFunction::SetOptimizationMarker(OptimizationMarker marker) {
 }
 
 bool JSFunction::has_feedback_vector() const {
-  return !feedback_cell()->value()->IsUndefined(GetIsolate());
+  return !feedback_cell()->value()->IsUndefined();
 }
 
 Context* JSFunction::context() {
@@ -2636,10 +2627,8 @@ bool JSFunction::has_initial_map() {
 
 bool JSFunction::has_instance_prototype() {
   DCHECK(has_prototype_slot());
-  return has_initial_map() ||
-         !prototype_or_initial_map()->IsTheHole(GetIsolate());
+  return has_initial_map() || !prototype_or_initial_map()->IsTheHole();
 }
-
 
 bool JSFunction::has_prototype() {
   DCHECK(has_prototype_slot());
@@ -2745,7 +2734,7 @@ ACCESSORS(JSDate, sec, Object, kSecOffset)
 
 SMI_ACCESSORS(JSMessageObject, type, kTypeOffset)
 ACCESSORS(JSMessageObject, argument, Object, kArgumentsOffset)
-ACCESSORS(JSMessageObject, script, Object, kScriptOffset)
+ACCESSORS(JSMessageObject, script, Script, kScriptOffset)
 ACCESSORS(JSMessageObject, stack_frames, Object, kStackFramesOffset)
 SMI_ACCESSORS(JSMessageObject, start_position, kStartPositionOffset)
 SMI_ACCESSORS(JSMessageObject, end_position, kEndPositionOffset)
@@ -3123,11 +3112,9 @@ void AccessorPair::set(AccessorComponent component, Object* value) {
 
 
 void AccessorPair::SetComponents(Object* getter, Object* setter) {
-  Isolate* isolate = GetIsolate();
-  if (!getter->IsNull(isolate)) set_getter(getter);
-  if (!setter->IsNull(isolate)) set_setter(setter);
+  if (!getter->IsNull()) set_getter(getter);
+  if (!setter->IsNull()) set_setter(setter);
 }
-
 
 bool AccessorPair::Equals(AccessorPair* pair) {
   return (this == pair) || pair->Equals(getter(), setter());
@@ -3145,7 +3132,7 @@ bool AccessorPair::ContainsAccessor() {
 
 
 bool AccessorPair::IsJSAccessor(Object* obj) {
-  return obj->IsCallable() || obj->IsUndefined(GetIsolate());
+  return obj->IsCallable() || obj->IsUndefined();
 }
 
 template <typename Derived, typename Shape>

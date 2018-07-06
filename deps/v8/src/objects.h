@@ -473,6 +473,7 @@ enum InstanceType : uint16_t {
   STACK_FRAME_INFO_TYPE,
   TUPLE2_TYPE,
   TUPLE3_TYPE,
+  ARRAY_BOILERPLATE_DESCRIPTION_TYPE,
   WASM_DEBUG_INFO_TYPE,
   WASM_EXPORTED_FUNCTION_DATA_TYPE,
 
@@ -485,7 +486,7 @@ enum InstanceType : uint16_t {
   ALLOCATION_SITE_TYPE,
   // FixedArrays.
   FIXED_ARRAY_TYPE,  // FIRST_FIXED_ARRAY_TYPE
-  BOILERPLATE_DESCRIPTION_TYPE,
+  OBJECT_BOILERPLATE_DESCRIPTION_TYPE,
   HASH_TABLE_TYPE,        // FIRST_HASH_TABLE_TYPE
   ORDERED_HASH_MAP_TYPE,  // FIRST_DICTIONARY_TYPE
   ORDERED_HASH_SET_TYPE,
@@ -667,6 +668,8 @@ enum class ComparisonResult {
 // (Returns false whenever {result} is kUndefined.)
 bool ComparisonResultToBool(Operation op, ComparisonResult result);
 
+enum class OnNonExistent { kThrowReferenceError, kReturnUndefined };
+
 class AbstractCode;
 class AccessorPair;
 class AccessCheckInfo;
@@ -738,7 +741,7 @@ template <class C> inline bool Is(Object* obj);
   V(ArrayList)                                 \
   V(BigInt)                                    \
   V(BigIntWrapper)                             \
-  V(BoilerplateDescription)                    \
+  V(ObjectBoilerplateDescription)              \
   V(Boolean)                                   \
   V(BooleanWrapper)                            \
   V(BreakPoint)                                \
@@ -753,8 +756,6 @@ template <class C> inline bool Is(Object* obj);
   V(CodeDataContainer)                         \
   V(CompilationCacheTable)                     \
   V(ConsString)                                \
-  V(ConstantElementsPair)                      \
-  V(CompileTimeValue)                          \
   V(Constructor)                               \
   V(Context)                                   \
   V(CoverageInfo)                              \
@@ -941,22 +942,18 @@ class Object {
 
   V8_INLINE bool IsExternal(Isolate* isolate) const;
 
-#define IS_TYPE_FUNCTION_DECL(Type, Value) \
-  V8_INLINE bool Is##Type(Isolate* isolate) const;
+// Oddball checks are faster when they are raw pointer comparisons, so the
+// isolate/read-only roots overloads should be preferred where possible.
+#define IS_TYPE_FUNCTION_DECL(Type, Value)            \
+  V8_INLINE bool Is##Type(Isolate* isolate) const;    \
+  V8_INLINE bool Is##Type(ReadOnlyRoots roots) const; \
+  V8_INLINE bool Is##Type() const;
   ODDBALL_LIST(IS_TYPE_FUNCTION_DECL)
 #undef IS_TYPE_FUNCTION_DECL
 
   V8_INLINE bool IsNullOrUndefined(Isolate* isolate) const;
-
-// Non-isolate version of oddball check. This is slower than the above check,
-// so it should only be used for DCHECKS.
-#ifdef DEBUG
-#define IS_TYPE_FUNCTION_DECL(Type, Value) V8_INLINE bool Is##Type() const;
-  ODDBALL_LIST(IS_TYPE_FUNCTION_DECL)
-#undef IS_TYPE_FUNCTION_DECL
-
+  V8_INLINE bool IsNullOrUndefined(ReadOnlyRoots roots) const;
   V8_INLINE bool IsNullOrUndefined() const;
-#endif
 
   // A non-keyed store is of the form a.x = foo or a["x"] = foo whereas
   // a keyed store is of the form a[expression] = foo.
@@ -1150,7 +1147,8 @@ class Object {
       Isolate* isolate, Handle<Object> object, Handle<Object> callable);
 
   V8_EXPORT_PRIVATE V8_WARN_UNUSED_RESULT static MaybeHandle<Object>
-  GetProperty(LookupIterator* it);
+  GetProperty(LookupIterator* it,
+              OnNonExistent on_non_existent = OnNonExistent::kReturnUndefined);
 
   // ES6 [[Set]] (when passed kDontThrow)
   // Invariants for this and related functions (unless stated otherwise):
@@ -1259,23 +1257,6 @@ class Object {
   // (including observable effects) as simply accessing the properties between 0
   // and length.
   bool IterationHasObservableEffects();
-
-  enum class OptionType : bool { String, Boolean };
-
-#ifdef V8_INTL_SUPPORT
-  // ECMA402 9.2.10. GetOption( options, property, type, type, values, fallback)
-  // ecma402/#sec-getoption
-  //
-  // Instead of passing undefined for the values argument as the spec
-  // defines, pass in an empty fixed array.
-  //
-  // service is a string denoting the type of Intl object; used when
-  // printing the error message.
-  V8_WARN_UNUSED_RESULT static MaybeHandle<Object> GetOption(
-      Isolate* isolate, Handle<JSReceiver> options, Handle<Name> property,
-      Object::OptionType type, Handle<FixedArray> values,
-      Handle<Object> fallback, Handle<String> service);
-#endif  // V8_INTL_SUPPORT
 
   DECL_VERIFIER(Object)
 #ifdef VERIFY_HEAP
@@ -1545,22 +1526,18 @@ class HeapObject: public Object {
 
   V8_INLINE bool IsExternal(Isolate* isolate) const;
 
-#define IS_TYPE_FUNCTION_DECL(Type, Value) \
-  V8_INLINE bool Is##Type(Isolate* isolate) const;
+// Oddball checks are faster when they are raw pointer comparisons, so the
+// isolate/read-only roots overloads should be preferred where possible.
+#define IS_TYPE_FUNCTION_DECL(Type, Value)            \
+  V8_INLINE bool Is##Type(Isolate* isolate) const;    \
+  V8_INLINE bool Is##Type(ReadOnlyRoots roots) const; \
+  V8_INLINE bool Is##Type() const;
   ODDBALL_LIST(IS_TYPE_FUNCTION_DECL)
 #undef IS_TYPE_FUNCTION_DECL
 
   V8_INLINE bool IsNullOrUndefined(Isolate* isolate) const;
-
-// Non-isolate version of oddball check. This is slower than the above check,
-// so it should only be used for DCHECKS.
-#ifdef DEBUG
-#define IS_TYPE_FUNCTION_DECL(Type, Value) V8_INLINE bool Is##Type() const;
-  ODDBALL_LIST(IS_TYPE_FUNCTION_DECL)
-#undef IS_TYPE_FUNCTION_DECL
-
+  V8_INLINE bool IsNullOrUndefined(ReadOnlyRoots roots) const;
   V8_INLINE bool IsNullOrUndefined() const;
-#endif
 
 #define DECL_STRUCT_PREDICATE(NAME, Name, name) V8_INLINE bool Is##Name() const;
   STRUCT_LIST(DECL_STRUCT_PREDICATE)
@@ -2478,7 +2455,7 @@ class JSObject: public JSReceiver {
   DECL_VERIFIER(JSObject)
 #ifdef OBJECT_PRINT
   bool PrintProperties(std::ostream& os);  // NOLINT
-  void PrintElements(Isolate* isolate, std::ostream& os);  // NOLINT
+  void PrintElements(std::ostream& os);    // NOLINT
 #endif
 #if defined(DEBUG) || defined(OBJECT_PRINT)
   void PrintTransitions(std::ostream& os);  // NOLINT
@@ -3578,7 +3555,7 @@ class JSMessageObject: public JSObject {
   DECL_ACCESSORS(argument, Object)
 
   // [script]: the script from which the error message originated.
-  DECL_ACCESSORS(script, Object)
+  DECL_ACCESSORS(script, Script)
 
   // [stack_frames]: an array of stack frames for this error object.
   DECL_ACCESSORS(stack_frames, Object)
@@ -4007,7 +3984,7 @@ class PropertyCell : public HeapObject {
   DECL_CAST(PropertyCell)
 
   // Dispatched behavior.
-  DECL_PRINTER_WITH_ISOLATE(PropertyCell)
+  DECL_PRINTER(PropertyCell)
   DECL_VERIFIER(PropertyCell)
 
   // Layout description.

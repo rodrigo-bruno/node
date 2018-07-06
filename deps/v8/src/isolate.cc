@@ -1671,8 +1671,17 @@ void Isolate::PrintCurrentStackTrace(FILE* out) {
 
     Handle<Object> receiver(frame->receiver(), this);
     Handle<JSFunction> function(frame->function(), this);
-    Handle<AbstractCode> code(AbstractCode::cast(frame->LookupCode()), this);
-    const int offset = static_cast<int>(frame->pc() - code->InstructionStart());
+    Handle<AbstractCode> code;
+    int offset;
+    if (frame->is_interpreted()) {
+      InterpretedFrame* interpreted_frame = InterpretedFrame::cast(frame);
+      code = handle(AbstractCode::cast(interpreted_frame->GetBytecodeArray()),
+                    this);
+      offset = interpreted_frame->GetBytecodeOffset();
+    } else {
+      code = handle(AbstractCode::cast(frame->LookupCode()), this);
+      offset = static_cast<int>(frame->pc() - code->InstructionStart());
+    }
 
     JSStackFrame site(this, receiver, function, code, offset);
     Handle<String> line = site.ToString().ToHandleChecked();
@@ -1902,8 +1911,7 @@ void Isolate::ReportPendingMessagesImpl(bool report_externally) {
   if (!message_obj->IsTheHole(this) && should_report_exception) {
     HandleScope scope(this);
     Handle<JSMessageObject> message(JSMessageObject::cast(message_obj), this);
-    Handle<JSValue> script_wrapper(JSValue::cast(message->script()), this);
-    Handle<Script> script(Script::cast(script_wrapper->value()), this);
+    Handle<Script> script(message->script(), this);
     int start_pos = message->start_position();
     int end_pos = message->end_position();
     MessageLocation location(script, start_pos, end_pos);
@@ -1999,8 +2007,7 @@ MessageLocation Isolate::GetMessageLocation() {
       !thread_local_top_.pending_message_obj_->IsTheHole(this)) {
     Handle<JSMessageObject> message_obj(
         JSMessageObject::cast(thread_local_top_.pending_message_obj_), this);
-    Handle<JSValue> script_wrapper(JSValue::cast(message_obj->script()), this);
-    Handle<Script> script(Script::cast(script_wrapper->value()), this);
+    Handle<Script> script(message_obj->script(), this);
     int start_pos = message_obj->start_position();
     int end_pos = message_obj->end_position();
     return MessageLocation(script, start_pos, end_pos);
@@ -2236,24 +2243,8 @@ void Isolate::SetAbortOnUncaughtExceptionCallback(
   abort_on_uncaught_exception_callback_ = callback;
 }
 
-namespace {
-void AdvanceWhileDebugContext(JavaScriptFrameIterator& it, Debug* debug) {
-  if (!debug->in_debug_scope()) return;
-
-  while (!it.done()) {
-    Context* context = Context::cast(it.frame()->context());
-    if (context->native_context() == *debug->debug_context()) {
-      it.Advance();
-    } else {
-      break;
-    }
-  }
-}
-}  // namespace
-
 Handle<Context> Isolate::GetCallingNativeContext() {
   JavaScriptFrameIterator it(this);
-  AdvanceWhileDebugContext(it, debug_);
   if (it.done()) return Handle<Context>::null();
   JavaScriptFrame* frame = it.frame();
   Context* context = Context::cast(frame->context());
@@ -2262,7 +2253,6 @@ Handle<Context> Isolate::GetCallingNativeContext() {
 
 Handle<Context> Isolate::GetIncumbentContext() {
   JavaScriptFrameIterator it(this);
-  AdvanceWhileDebugContext(it, debug_);
 
   // 1st candidate: most-recently-entered author function's context
   // if it's newer than the last Context::BackupIncumbentScope entry.
@@ -2990,16 +2980,18 @@ bool Isolate::Init(StartupDeserializer* des) {
   DCHECK(!heap_.HasBeenSetUp());
   heap_.SetUp();
 
-  // Setup the wasm engine. Currently, there's one per Isolate.
-  wasm_engine_.reset(
-      new wasm::WasmEngine(std::unique_ptr<wasm::WasmCodeManager>(
-          new wasm::WasmCodeManager(kMaxWasmCodeMemory))));
-  wasm_engine_->memory_tracker()->SetAllocationResultHistogram(
-      counters()->wasm_memory_allocation_result());
-  wasm_engine_->memory_tracker()->SetAddressSpaceUsageHistogram(
-      counters()->wasm_address_space_usage_mb());
-  wasm_engine_->code_manager()->SetModuleCodeSizeHistogram(
-      counters()->wasm_module_code_size_mb());
+  // Setup the wasm engine. Currently, there's one per Isolate by default.
+  if (wasm_engine_ == nullptr) {
+    wasm_engine_.reset(
+        new wasm::WasmEngine(std::unique_ptr<wasm::WasmCodeManager>(
+            new wasm::WasmCodeManager(kMaxWasmCodeMemory))));
+    wasm_engine_->memory_tracker()->SetAllocationResultHistogram(
+        counters()->wasm_memory_allocation_result());
+    wasm_engine_->memory_tracker()->SetAddressSpaceUsageHistogram(
+        counters()->wasm_address_space_usage_mb());
+    wasm_engine_->code_manager()->SetModuleCodeSizeHistogram(
+        counters()->wasm_module_code_size_mb());
+  }
 
   deoptimizer_data_ = new DeoptimizerData(heap());
 

@@ -25,7 +25,6 @@
 #include "src/bootstrapper.h"
 #include "src/builtins/builtins.h"
 #include "src/code-stubs.h"
-#include "src/compilation-dependencies.h"
 #include "src/compiler.h"
 #include "src/counters-inl.h"
 #include "src/counters.h"
@@ -60,6 +59,7 @@
 #include "src/objects/debug-objects-inl.h"
 #include "src/objects/frame-array-inl.h"
 #include "src/objects/hash-table-inl.h"
+#include "src/objects/literal-objects-inl.h"
 #ifdef V8_INTL_SUPPORT
 #include "src/objects/js-locale.h"
 #endif  // V8_INTL_SUPPORT
@@ -179,8 +179,7 @@ MaybeHandle<JSReceiver> Object::ToObject(Isolate* isolate,
 MaybeHandle<JSReceiver> Object::ConvertReceiver(Isolate* isolate,
                                                 Handle<Object> object) {
   if (object->IsJSReceiver()) return Handle<JSReceiver>::cast(object);
-  if (*object == ReadOnlyRoots(isolate).null_value() ||
-      object->IsUndefined(isolate)) {
+  if (object->IsNullOrUndefined(isolate)) {
     return isolate->global_proxy();
   }
   return Object::ToObject(isolate, object);
@@ -1010,7 +1009,8 @@ Maybe<bool> JSReceiver::HasOwnProperty(Handle<JSReceiver> object,
 }
 
 // static
-MaybeHandle<Object> Object::GetProperty(LookupIterator* it) {
+MaybeHandle<Object> Object::GetProperty(LookupIterator* it,
+                                        OnNonExistent on_non_existent) {
   for (; it->IsFound(); it->Next()) {
     switch (it->state()) {
       case LookupIterator::NOT_FOUND:
@@ -1043,6 +1043,12 @@ MaybeHandle<Object> Object::GetProperty(LookupIterator* it) {
       case LookupIterator::DATA:
         return it->GetDataValue();
     }
+  }
+
+  if (on_non_existent == OnNonExistent::kThrowReferenceError) {
+    THROW_NEW_ERROR(it->isolate(),
+                    NewReferenceError(MessageTemplate::kNotDefined, it->name()),
+                    Object);
   }
   return it->isolate()->factory()->undefined_value();
 }
@@ -2777,7 +2783,7 @@ void String::PrintUC16(std::ostream& os, int start, int end) {  // NOLINT
 void JSObject::JSObjectShortPrint(StringStream* accumulator) {
   switch (map()->instance_type()) {
     case JS_ARRAY_TYPE: {
-      double length = JSArray::cast(this)->length()->IsUndefined(GetIsolate())
+      double length = JSArray::cast(this)->length()->IsUndefined()
                           ? 0
                           : JSArray::cast(this)->length()->Number();
       accumulator->Add("<JSArray[%u]>", static_cast<uint32_t>(length));
@@ -2994,7 +3000,7 @@ VisitorId Map::GetVisitorId(Map* map) {
       return kVisitFreeSpace;
 
     case FIXED_ARRAY_TYPE:
-    case BOILERPLATE_DESCRIPTION_TYPE:
+    case OBJECT_BOILERPLATE_DESCRIPTION_TYPE:
     case HASH_TABLE_TYPE:
     case ORDERED_HASH_MAP_TYPE:
     case ORDERED_HASH_SET_TYPE:
@@ -3273,7 +3279,6 @@ bool JSObject::IsUnmodifiedApiObject(Object** o) {
 void HeapObject::HeapObjectShortPrint(std::ostream& os) {  // NOLINT
   Heap* heap = GetHeap();
   ReadOnlyRoots roots(heap);
-  Isolate* isolate = heap->isolate();
   if (!heap->Contains(this)) {
     os << "!!!INVALID POINTER!!!";
     return;
@@ -3369,8 +3374,8 @@ void HeapObject::HeapObjectShortPrint(std::ostream& os) {  // NOLINT
     case FIXED_ARRAY_TYPE:
       os << "<FixedArray[" << FixedArray::cast(this)->length() << "]>";
       break;
-    case BOILERPLATE_DESCRIPTION_TYPE:
-      os << "<BoilerplateDescription[" << FixedArray::cast(this)->length()
+    case OBJECT_BOILERPLATE_DESCRIPTION_TYPE:
+      os << "<ObjectBoilerplateDescription[" << FixedArray::cast(this)->length()
          << "]>";
       break;
     case FIXED_DOUBLE_ARRAY_TYPE:
@@ -3469,15 +3474,15 @@ void HeapObject::HeapObjectShortPrint(std::ostream& os) {  // NOLINT
       break;
     }
     case ODDBALL_TYPE: {
-      if (IsUndefined(isolate)) {
+      if (IsUndefined()) {
         os << "<undefined>";
-      } else if (IsTheHole(isolate)) {
+      } else if (IsTheHole()) {
         os << "<the_hole>";
-      } else if (IsNull(isolate)) {
+      } else if (IsNull()) {
         os << "<null>";
-      } else if (IsTrue(isolate)) {
+      } else if (IsTrue()) {
         os << "<true>";
-      } else if (IsFalse(isolate)) {
+      } else if (IsFalse()) {
         os << "<false>";
       } else {
         os << "<Odd Oddball: ";
@@ -3551,7 +3556,7 @@ void HeapObject::HeapObjectShortPrint(std::ostream& os) {  // NOLINT
       os << "callback= " << Brief(info->callback());
       os << ", js_callback= " << Brief(info->js_callback());
       os << ", data= " << Brief(info->data());
-      if (info->IsSideEffectFreeCallHandlerInfo(isolate)) {
+      if (info->IsSideEffectFreeCallHandlerInfo()) {
         os << ", side_effect_free= true>";
       } else {
         os << ", side_effect_free= false>";
@@ -3573,6 +3578,10 @@ void Tuple2::BriefPrintDetails(std::ostream& os) {
 void Tuple3::BriefPrintDetails(std::ostream& os) {
   os << " " << Brief(value1()) << ", " << Brief(value2()) << ", "
      << Brief(value3());
+}
+
+void ArrayBoilerplateDescription::BriefPrintDetails(std::ostream& os) {
+  os << " " << elements_kind() << ", " << Brief(constant_elements());
 }
 
 void CallableTask::BriefPrintDetails(std::ostream& os) {
@@ -13012,7 +13021,7 @@ bool CanSubclassHaveInobjectProperties(InstanceType instance_type) {
       return true;
 
     case BIGINT_TYPE:
-    case BOILERPLATE_DESCRIPTION_TYPE:
+    case OBJECT_BOILERPLATE_DESCRIPTION_TYPE:
     case BYTECODE_ARRAY_TYPE:
     case BYTE_ARRAY_TYPE:
     case CELL_TYPE:
@@ -13509,7 +13518,7 @@ bool Script::GetPositionInfo(int position, PositionInfo* info,
         ->GetPositionInfo(static_cast<uint32_t>(position), info);
   }
 
-  if (line_ends()->IsUndefined(GetIsolate())) {
+  if (line_ends()->IsUndefined()) {
     // Slow mode: we do not have line_ends. We have to iterate through source.
     if (!GetPositionInfoSlow(this, position, info)) return false;
   } else {
@@ -13607,32 +13616,6 @@ Object* Script::GetNameOrSourceURL() {
   // Keep in sync with ScriptNameOrSourceURL in messages.js.
   if (!source_url()->IsUndefined(isolate)) return source_url();
   return name();
-}
-
-
-Handle<JSObject> Script::GetWrapper(Handle<Script> script) {
-  Isolate* isolate = script->GetIsolate();
-  if (!script->wrapper()->IsUndefined(isolate)) {
-    DCHECK(script->wrapper()->IsWeakCell());
-    Handle<WeakCell> cell(WeakCell::cast(script->wrapper()), isolate);
-    if (!cell->cleared()) {
-      // Return a handle for the existing script wrapper from the cache.
-      return handle(JSObject::cast(cell->value()), isolate);
-    }
-    // If we found an empty WeakCell, that means the script wrapper was
-    // GCed.  We are not notified directly of that, so we decrement here
-    // so that we at least don't count double for any given script.
-    isolate->counters()->script_wrappers()->Decrement();
-  }
-  // Construct a new script wrapper.
-  isolate->counters()->script_wrappers()->Increment();
-  Handle<JSFunction> constructor = isolate->script_function();
-  Handle<JSValue> result =
-      Handle<JSValue>::cast(isolate->factory()->NewJSObject(constructor));
-  result->set_value(*script);
-  Handle<WeakCell> cell = isolate->factory()->NewWeakCell(result);
-  script->set_wrapper(*cell);
-  return result;
 }
 
 MaybeHandle<SharedFunctionInfo> Script::FindSharedFunctionInfo(
@@ -14970,32 +14953,17 @@ void JSArray::SetLength(Handle<JSArray> array, uint32_t new_length) {
   array->GetElementsAccessor()->SetLength(array, new_length);
 }
 
-
-Handle<DependentCode> DependentCode::InsertCompilationDependencies(
-    Handle<DependentCode> entries, DependencyGroup group,
-    Handle<Foreign> info) {
-  return Insert(entries, group, info);
-}
-
-
 Handle<DependentCode> DependentCode::InsertWeakCode(
     Handle<DependentCode> entries, DependencyGroup group,
     Handle<WeakCell> code_cell) {
-  return Insert(entries, group, code_cell);
-}
-
-
-Handle<DependentCode> DependentCode::Insert(Handle<DependentCode> entries,
-                                            DependencyGroup group,
-                                            Handle<Object> object) {
   if (entries->length() == 0 || entries->group() > group) {
     // There is no such group.
-    return DependentCode::New(group, object, entries);
+    return DependentCode::New(group, code_cell, entries);
   }
   if (entries->group() < group) {
     // The group comes later in the list.
     Handle<DependentCode> old_next(entries->next_link(), entries->GetIsolate());
-    Handle<DependentCode> new_next = Insert(old_next, group, object);
+    Handle<DependentCode> new_next = InsertWeakCode(old_next, group, code_cell);
     if (!old_next.is_identical_to(new_next)) {
       entries->set_next_link(*new_next);
     }
@@ -15005,14 +14973,14 @@ Handle<DependentCode> DependentCode::Insert(Handle<DependentCode> entries,
   int count = entries->count();
   // Check for existing entry to avoid duplicates.
   for (int i = 0; i < count; i++) {
-    if (entries->object_at(i) == *object) return entries;
+    if (entries->object_at(i) == *code_cell) return entries;
   }
   if (entries->length() < kCodesStartIndex + count + 1) {
     entries = EnsureSpace(entries);
     // Count could have changed, reload it.
     count = entries->count();
   }
-  entries->set_object_at(count, *object);
+  entries->set_object_at(count, *code_cell);
   entries->set_count(count + 1);
   return entries;
 }
@@ -15059,34 +15027,6 @@ bool DependentCode::Compact() {
     clear_at(i);
   }
   return new_count < old_count;
-}
-
-
-void DependentCode::UpdateToFinishedCode(DependencyGroup group, Foreign* info,
-                                         WeakCell* code_cell) {
-  if (this->length() == 0 || this->group() > group) {
-    // There is no such group.
-    return;
-  }
-  if (this->group() < group) {
-    // The group comes later in the list.
-    next_link()->UpdateToFinishedCode(group, info, code_cell);
-    return;
-  }
-  DCHECK_EQ(group, this->group());
-  DisallowHeapAllocation no_gc;
-  int count = this->count();
-  for (int i = 0; i < count; i++) {
-    if (object_at(i) == info) {
-      set_object_at(i, code_cell);
-      break;
-    }
-  }
-#ifdef DEBUG
-  for (int i = 0; i < count; i++) {
-    DCHECK(object_at(i) != info);
-  }
-#endif
 }
 
 
@@ -15178,20 +15118,12 @@ bool DependentCode::MarkCodeForDeoptimization(
   int count = this->count();
   for (int i = 0; i < count; i++) {
     Object* obj = object_at(i);
-    if (obj->IsWeakCell()) {
-      WeakCell* cell = WeakCell::cast(obj);
-      if (cell->cleared()) continue;
-      Code* code = Code::cast(cell->value());
-      if (!code->marked_for_deoptimization()) {
-        code->SetMarkedForDeoptimization(DependencyGroupName(group));
-        marked = true;
-      }
-    } else {
-      DCHECK(obj->IsForeign());
-      CompilationDependencies* info =
-          reinterpret_cast<CompilationDependencies*>(
-              Foreign::cast(obj)->foreign_address());
-      info->Abort();
+    WeakCell* cell = WeakCell::cast(obj);
+    if (cell->cleared()) continue;
+    Code* code = Code::cast(cell->value());
+    if (!code->marked_for_deoptimization()) {
+      code->SetMarkedForDeoptimization(DependencyGroupName(group));
+      marked = true;
     }
   }
   for (int i = 0; i < count; i++) {
@@ -18206,7 +18138,7 @@ Handle<Derived> ObjectHashTableBase<Derived, Shape>::Remove(
   DCHECK(table->IsKey(table->GetIsolate(), *key));
 
   Object* hash = key->GetHash();
-  if (hash->IsUndefined(table->GetIsolate())) {
+  if (hash->IsUndefined()) {
     *was_present = false;
     return table;
   }
@@ -18519,21 +18451,10 @@ void JSDate::SetCachedFields(int64_t local_time_ms, DateCache* date_cache) {
   set_sec(Smi::FromInt(sec), SKIP_WRITE_BARRIER);
 }
 
-namespace {
-
-Script* ScriptFromJSValue(Object* in) {
-  DCHECK(in->IsJSValue());
-  JSValue* jsvalue = JSValue::cast(in);
-  DCHECK(jsvalue->value()->IsScript());
-  return Script::cast(jsvalue->value());
-}
-
-}  // namespace
-
 int JSMessageObject::GetLineNumber() const {
   if (start_position() == -1) return Message::kNoLineNumberInfo;
 
-  Handle<Script> the_script = handle(ScriptFromJSValue(script()), GetIsolate());
+  Handle<Script> the_script(script(), GetIsolate());
 
   Script::PositionInfo info;
   const Script::OffsetFlag offset_flag = Script::WITH_OFFSET;
@@ -18548,7 +18469,7 @@ int JSMessageObject::GetLineNumber() const {
 int JSMessageObject::GetColumnNumber() const {
   if (start_position() == -1) return -1;
 
-  Handle<Script> the_script = handle(ScriptFromJSValue(script()), GetIsolate());
+  Handle<Script> the_script(script(), GetIsolate());
 
   Script::PositionInfo info;
   const Script::OffsetFlag offset_flag = Script::WITH_OFFSET;
@@ -18562,7 +18483,7 @@ int JSMessageObject::GetColumnNumber() const {
 
 Handle<String> JSMessageObject::GetSourceLine() const {
   Isolate* isolate = GetIsolate();
-  Handle<Script> the_script = handle(ScriptFromJSValue(script()), isolate);
+  Handle<Script> the_script(script(), isolate);
 
   if (the_script->type() == Script::TYPE_WASM) {
     return isolate->factory()->empty_string();
@@ -18972,57 +18893,6 @@ MaybeHandle<Name> FunctionTemplateInfo::TryGetCachedPropertyName(
   }
   return MaybeHandle<Name>();
 }
-
-#ifdef V8_INTL_SUPPORT
-MaybeHandle<Object> Object::GetOption(
-    Isolate* isolate, Handle<JSReceiver> options, Handle<Name> property,
-    Object::OptionType type, Handle<FixedArray> values, Handle<Object> fallback,
-    Handle<String> services) {
-  // 1. Let value be ? Get(options, property).
-  Handle<Object> value;
-  ASSIGN_RETURN_ON_EXCEPTION(
-      isolate, value, Object::GetPropertyOrElement(options, property), Object);
-
-  // 2. If value is not undefined, then
-  if (!value->IsUndefined(isolate)) {
-    // 2. b. If type is "boolean", then
-    if (type == Object::OptionType::Boolean) {
-      // 2. b. i. Let value be ToBoolean(value).
-      value = isolate->factory()->ToBoolean(value->BooleanValue(isolate));
-    }
-
-    // 2. c. If type is "string", then
-    if (type == Object::OptionType::String) {
-      // 2. c. i. Let value be ? ToString(value).
-      ASSIGN_RETURN_ON_EXCEPTION(isolate, value,
-                                 Object::ToString(isolate, value), Object);
-    }
-
-    // 2. d. if values is not undefined, then
-    if (values->length() > 0) {
-      // 2. d. i. If values does not contain an element equal to value,
-      // throw a RangeError exception.
-      for (int i = 0; i < values->length(); i++) {
-        if (value->StrictEquals(values->get(i))) {
-          // 2. e. return value
-          return value;
-        }
-      }
-
-      THROW_NEW_ERROR(isolate,
-                      NewRangeError(MessageTemplate::kValueOutOfRange, value,
-                                    services, property),
-                      Object);
-    }
-
-    // 2. e. return value
-    return value;
-  }
-
-  // 3. Else, return fallback.
-  return fallback;
-}
-#endif  // V8_INTL_SUPPORT
 
 // Force instantiation of template instances class.
 // Please note this list is compiler dependent.

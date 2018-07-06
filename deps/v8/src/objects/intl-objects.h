@@ -201,11 +201,65 @@ class Intl {
   // Returns the underlying Intl receiver for various methods which
   // implement ECMA-402 v1 semantics for supporting initializing
   // existing Intl objects.
-  static MaybeHandle<JSReceiver> UnwrapReceiver(
+  V8_WARN_UNUSED_RESULT static MaybeHandle<JSReceiver> UnwrapReceiver(
       Isolate* isolate, Handle<JSReceiver> receiver,
       Handle<JSFunction> constructor, Intl::Type type,
       Handle<String> method_name /* TODO(gsathya): Make this char const* */,
       bool check_legacy_constructor = false);
+
+  // The ResolveLocale abstract operation compares a BCP 47 language
+  // priority list requestedLocales against the locales in
+  // availableLocales and determines the best available language to
+  // meet the request. availableLocales, requestedLocales, and
+  // relevantExtensionKeys must be provided as List values, options
+  // and localeData as Records.
+  //
+  // #ecma402/sec-partitiondatetimepattern
+  //
+  // Returns a JSObject with two properties:
+  //   (1) locale
+  //   (2) extension
+  //
+  // To access either, use JSObject::GetDataProperty.
+  V8_WARN_UNUSED_RESULT static MaybeHandle<JSObject> ResolveLocale(
+      Isolate* isolate, const char* service, Handle<Object> requestedLocales,
+      Handle<Object> options);
+
+  // ECMA402 9.2.10. GetOption( options, property, type, values, fallback)
+  // ecma402/#sec-getoption
+  //
+  // This is specialized for the case when type is string.
+  //
+  // Instead of passing undefined for the values argument as the spec
+  // defines, pass in an empty vector.
+  //
+  // Returns true if options object has the property and stores the
+  // result in value. Returns false if the value is not found. The
+  // caller is required to use fallback value appropriately in this
+  // case.
+  //
+  // service is a string denoting the type of Intl object; used when
+  // printing the error message.
+  V8_WARN_UNUSED_RESULT static Maybe<bool> GetStringOption(
+      Isolate* isolate, Handle<JSReceiver> options, const char* property,
+      std::vector<const char*> values, const char* service,
+      std::unique_ptr<char[]>* result);
+
+  // ECMA402 9.2.10. GetOption( options, property, type, values, fallback)
+  // ecma402/#sec-getoption
+  //
+  // This is specialized for the case when type is boolean.
+  //
+  // Returns true if options object has the property and stores the
+  // result in value. Returns false if the value is not found. The
+  // caller is required to use fallback value appropriately in this
+  // case.
+  //
+  // service is a string denoting the type of Intl object; used when
+  // printing the error message.
+  V8_WARN_UNUSED_RESULT static Maybe<bool> GetBoolOption(
+      Isolate* isolate, Handle<JSReceiver> options, const char* property,
+      const char* service, bool* result);
 };
 
 }  // namespace internal

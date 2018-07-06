@@ -78,7 +78,7 @@ namespace internal {
   TFS(CreateEmptyArrayLiteral, kFeedbackVector, kSlot)                         \
   TFS(CreateShallowArrayLiteral, kFeedbackVector, kSlot, kConstantElements)    \
   TFS(CreateShallowObjectLiteral, kFeedbackVector, kSlot,                      \
-      kBoilerplateDescription, kFlags)                                         \
+      kObjectBoilerplateDescription, kFlags)                                   \
   /* ES6 section 9.5.14 [[Construct]] ( argumentsList, newTarget) */           \
   TFC(ConstructProxy, JSTrampoline, 1)                                         \
                                                                                \
@@ -889,7 +889,7 @@ namespace internal {
   TFJ(ProxyConstructor, 2, kReceiver, kTarget, kHandler)                       \
   TFJ(ProxyRevocable, 2, kReceiver, kTarget, kHandler)                         \
   TFJ(ProxyRevoke, 0, kReceiver)                                               \
-  TFS(ProxyGetProperty, kProxy, kName, kReceiverValue)                         \
+  TFS(ProxyGetProperty, kProxy, kName, kReceiverValue, kOnNonExistent)         \
   TFS(ProxyHasProperty, kProxy, kName)                                         \
   TFS(ProxySetProperty, kProxy, kName, kValue, kReceiverValue, kLanguageMode)  \
                                                                                \

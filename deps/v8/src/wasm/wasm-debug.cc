@@ -299,8 +299,6 @@ class InterpreterHandle {
   void NotifyDebugEventListeners(WasmInterpreter::Thread* thread) {
     // Enter the debugger.
     DebugScope debug_scope(isolate_->debug());
-    if (debug_scope.failed()) return;
-
     // Postpone interrupt during breakpoint processing.
     PostponeInterruptsScope postpone(isolate_);
 
@@ -550,7 +548,7 @@ wasm::InterpreterHandle* GetInterpreterHandle(WasmDebugInfo* debug_info) {
 
 wasm::InterpreterHandle* GetInterpreterHandleOrNull(WasmDebugInfo* debug_info) {
   Object* handle_obj = debug_info->interpreter_handle();
-  if (handle_obj->IsUndefined(debug_info->GetIsolate())) return nullptr;
+  if (handle_obj->IsUndefined()) return nullptr;
   return Managed<wasm::InterpreterHandle>::cast(handle_obj)->raw();
 }
 

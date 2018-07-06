@@ -200,6 +200,13 @@ class WasmEngine;
     return __isolate__->Throw(*__isolate__->factory()->call); \
   } while (false)
 
+#define THROW_NEW_ERROR_RETURN_VALUE(isolate, call, value) \
+  do {                                                     \
+    Isolate* __isolate__ = (isolate);                      \
+    __isolate__->Throw(*__isolate__->factory()->call);     \
+    return value;                                          \
+  } while (false)
+
 #define RETURN_ON_EXCEPTION_VALUE(isolate, call, value)            \
   do {                                                             \
     if ((call).is_null()) {                                        \
@@ -902,7 +909,6 @@ class Isolate : private HiddenFactory {
   }
   StackGuard* stack_guard() { return &stack_guard_; }
   Heap* heap() { return &heap_; }
-  wasm::WasmEngine* wasm_engine() const { return wasm_engine_.get(); }
   StubCache* load_stub_cache() { return load_stub_cache_; }
   StubCache* store_stub_cache() { return store_stub_cache_; }
   DeoptimizerData* deoptimizer_data() { return deoptimizer_data_; }
@@ -1378,6 +1384,12 @@ class Isolate : private HiddenFactory {
     elements_deletion_counter_ = value;
   }
 
+  wasm::WasmEngine* wasm_engine() const { return wasm_engine_.get(); }
+  void set_wasm_engine(std::shared_ptr<wasm::WasmEngine> engine) {
+    DCHECK_NULL(wasm_engine_);  // Only call once before {Init}.
+    wasm_engine_ = std::move(engine);
+  }
+
   const v8::Context::BackupIncumbentScope* top_backup_incumbent_scope() const {
     return top_backup_incumbent_scope_;
   }
@@ -1690,7 +1702,7 @@ class Isolate : private HiddenFactory {
 
   size_t elements_deletion_counter_ = 0;
 
-  std::unique_ptr<wasm::WasmEngine> wasm_engine_;
+  std::shared_ptr<wasm::WasmEngine> wasm_engine_;
 
   std::unique_ptr<TracingCpuProfilerImpl> tracing_cpu_profiler_;
 

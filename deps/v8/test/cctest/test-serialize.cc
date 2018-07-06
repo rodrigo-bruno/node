@@ -323,6 +323,13 @@ UNINITIALIZED_TEST(StartupSerializerOnce) {
   TestStartupSerializerOnceImpl();
 }
 
+UNINITIALIZED_TEST(StartupSerializerOnce1) {
+  DisableLazyDeserialization();
+  DisableAlwaysOpt();
+  FLAG_serialization_chunk_size = 1;
+  TestStartupSerializerOnceImpl();
+}
+
 UNINITIALIZED_TEST(StartupSerializerOnce32) {
   DisableLazyDeserialization();
   DisableAlwaysOpt();
@@ -1382,7 +1389,7 @@ static Handle<SharedFunctionInfo> CompileScriptAndProduceCache(
   return sfi;
 }
 
-TEST(CodeSerializerOnePlusOne) {
+void TestCodeSerializerOnePlusOneImpl() {
   LocalContext context;
   Isolate* isolate = CcTest::i_isolate();
   isolate->compilation_cache()->Disable();  // Disable same-isolate code cache.
@@ -1429,6 +1436,23 @@ TEST(CodeSerializerOnePlusOne) {
   CHECK_EQ(builtins_count, CountBuiltins());
 
   delete cache;
+}
+
+TEST(CodeSerializerOnePlusOne) { TestCodeSerializerOnePlusOneImpl(); }
+
+TEST(CodeSerializerOnePlusOne1) {
+  FLAG_serialization_chunk_size = 1;
+  TestCodeSerializerOnePlusOneImpl();
+}
+
+TEST(CodeSerializerOnePlusOne32) {
+  FLAG_serialization_chunk_size = 32;
+  TestCodeSerializerOnePlusOneImpl();
+}
+
+TEST(CodeSerializerOnePlusOne4K) {
+  FLAG_serialization_chunk_size = 4 * KB;
+  TestCodeSerializerOnePlusOneImpl();
 }
 
 TEST(CodeSerializerPromotedToCompilationCache) {
@@ -3524,11 +3548,21 @@ UNINITIALIZED_TEST(ReinitializeHashSeedRehashable) {
   delete[] blob.data;
 }
 
-TEST(SerializationMemoryStats) {
+TEST(SerializationStats) {
   FLAG_profile_deserialization = true;
   FLAG_always_opt = false;
   v8::StartupData blob = CreateSnapshotDataBlob();
   delete[] blob.data;
+
+  // Track the embedded blob size as well.
+  {
+    int embedded_blob_size = 0;
+    if (FLAG_embedded_builtins) {
+      i::EmbeddedData d = i::EmbeddedData::FromBlob();
+      embedded_blob_size = static_cast<int>(d.size());
+    }
+    PrintF("Embedded blob is %d bytes\n", embedded_blob_size);
+  }
 }
 
 void CheckSFIsAreWeak(WeakFixedArray* sfis, Isolate* isolate) {

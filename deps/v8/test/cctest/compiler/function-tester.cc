@@ -153,7 +153,7 @@ Handle<JSFunction> FunctionTester::Compile(Handle<JSFunction> function) {
 
   Handle<Code> code =
       Pipeline::GenerateCodeForTesting(&info, isolate).ToHandleChecked();
-  info.dependencies()->Commit(code);
+  CHECK(info.dependencies()->Commit(code));
   info.context()->native_context()->AddOptimizedCode(*code);
   function->set_code(*code);
   return function;
@@ -168,7 +168,8 @@ Handle<JSFunction> FunctionTester::CompileGraph(Graph* graph) {
 
   auto call_descriptor = Linkage::ComputeIncoming(&zone, &info);
   Handle<Code> code =
-      Pipeline::GenerateCodeForTesting(&info, isolate, call_descriptor, graph)
+      Pipeline::GenerateCodeForTesting(&info, isolate, call_descriptor, graph,
+                                       AssemblerOptions::Default(isolate))
           .ToHandleChecked();
   function->set_code(*code);
   return function;

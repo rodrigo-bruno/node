@@ -27,9 +27,9 @@
 namespace v8 {
 namespace internal {
 
-MacroAssembler::MacroAssembler(Isolate* isolate, const Options& options,
-                               void* buffer, int size,
-                               CodeObjectRequired create_code_object)
+MacroAssembler::MacroAssembler(Isolate* isolate,
+                               const AssemblerOptions& options, void* buffer,
+                               int size, CodeObjectRequired create_code_object)
     : TurboAssembler(isolate, options, buffer, size, create_code_object) {
   if (create_code_object == CodeObjectRequired::kYes) {
     // Unlike TurboAssembler, which can be used off the main thread and may not
@@ -1931,7 +1931,13 @@ void TurboAssembler::Jump(Handle<Code> code, RelocInfo::Mode rmode,
                           Condition cond) {
   DCHECK(RelocInfo::IsCodeTarget(rmode));
   if (FLAG_embedded_builtins) {
-    if (root_array_available_ && options().isolate_independent_code) {
+    if (root_array_available_ && options().isolate_independent_code &&
+        !Builtins::IsIsolateIndependentBuiltin(*code)) {
+      // Calls to embedded targets are initially generated as standard
+      // pc-relative calls below. When creating the embedded blob, call offsets
+      // are patched up to point directly to the off-heap instruction start.
+      // Note: It is safe to dereference {code} above since code generation
+      // for builtins and code stubs happens on the main thread.
       UseScratchRegisterScope temps(this);
       Register scratch = temps.AcquireX();
       IndirectLoadConstant(scratch, code);
@@ -1955,7 +1961,7 @@ void TurboAssembler::Jump(Handle<Code> code, RelocInfo::Mode rmode,
     }
   }
   if (CanUseNearCallOrJump(rmode)) {
-    JumpHelper(static_cast<int64_t>(GetCodeTargetIndex(code)), rmode, cond);
+    JumpHelper(static_cast<int64_t>(AddCodeTarget(code)), rmode, cond);
   } else {
     Jump(code.address(), rmode, cond);
   }
@@ -2004,7 +2010,13 @@ void TurboAssembler::Call(Handle<Code> code, RelocInfo::Mode rmode) {
 #endif
 
   if (FLAG_embedded_builtins) {
-    if (root_array_available_ && options().isolate_independent_code) {
+    if (root_array_available_ && options().isolate_independent_code &&
+        !Builtins::IsIsolateIndependentBuiltin(*code)) {
+      // Calls to embedded targets are initially generated as standard
+      // pc-relative calls below. When creating the embedded blob, call offsets
+      // are patched up to point directly to the off-heap instruction start.
+      // Note: It is safe to dereference {code} above since code generation
+      // for builtins and code stubs happens on the main thread.
       UseScratchRegisterScope temps(this);
       Register scratch = temps.AcquireX();
       IndirectLoadConstant(scratch, code);
@@ -2028,7 +2040,7 @@ void TurboAssembler::Call(Handle<Code> code, RelocInfo::Mode rmode) {
     }
   }
   if (CanUseNearCallOrJump(rmode)) {
-    near_call(GetCodeTargetIndex(code), rmode);
+    near_call(AddCodeTarget(code), rmode);
   } else {
     IndirectCall(code.address(), rmode);
   }

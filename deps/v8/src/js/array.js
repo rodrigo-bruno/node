@@ -391,46 +391,6 @@ DEFINE_METHOD(
 );
 
 
-// Removes the last element from the array and returns it. See
-// ECMA-262, section 15.4.4.6.
-function ArrayPopFallback() {
-  var array = TO_OBJECT(this);
-  var n = TO_LENGTH(array.length);
-  if (n == 0) {
-    array.length = n;
-    return;
-  }
-
-  n--;
-  var value = array[n];
-  delete array[n];
-  array.length = n;
-  return value;
-}
-
-
-// Appends the arguments to the end of the array and returns the new
-// length of the array. See ECMA-262, section 15.4.4.7.
-function ArrayPushFallback() {
-  var array = TO_OBJECT(this);
-  var n = TO_LENGTH(array.length);
-  var m = arguments.length;
-
-  // Subtract n from kMaxSafeInteger rather than testing m + n >
-  // kMaxSafeInteger. n may already be kMaxSafeInteger. In that case adding
-  // e.g., 1 would not be safe.
-  if (m > kMaxSafeInteger - n) throw %make_type_error(kPushPastSafeLength, m, n);
-
-  for (var i = 0; i < m; i++) {
-    array[i+n] = arguments[i];
-  }
-
-  var new_length = n + m;
-  array.length = new_length;
-  return new_length;
-}
-
-
 // For implementing reverse() on large, sparse arrays.
 function SparseReverse(array, len) {
   var keys = GetSortedArrayKeys(array, %GetArrayKeys(array, len));
@@ -1059,8 +1019,6 @@ utils.Export(function(to) {
   "array_keys_iterator", ArrayKeys,
   "array_values_iterator", ArrayValues,
   // Fallback implementations of Array builtins.
-  "array_pop", ArrayPopFallback,
-  "array_push", ArrayPushFallback,
   "array_shift", ArrayShiftFallback,
   "array_splice", ArraySpliceFallback,
   "array_unshift", ArrayUnshiftFallback,
